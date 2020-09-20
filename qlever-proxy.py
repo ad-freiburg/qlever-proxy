@@ -9,6 +9,7 @@ import logging
 import http.server
 import socket
 import urllib3
+import urllib.parse
 import certifi
 import re
 import threading
@@ -143,7 +144,7 @@ class QueryProcessor:
         response, backend_id = result_queue.get()
         return response
 
-    def query_both_backends_in_parallel(self, path):
+    def query_both_backends_in_parallel(self, path_1, path_2):
         """
         Query both backends in parallel with a preference for a result from the
         first backend, as explained above.
@@ -153,9 +154,9 @@ class QueryProcessor:
         # append their response object to the given queue.
         result_queue = queue.Queue()
         thread_1 = threading.Thread(target=self.backend_1.query,
-                                    args=(path, result_queue, self.timeout_backend_1))
+                                    args=(path_1, result_queue, self.timeout_backend_1))
         thread_2 = threading.Thread(target=self.backend_2.query,
-                                    args=(path, result_queue, self.timeout_backend_2))
+                                    args=(path_2, result_queue, self.timeout_backend_2))
         for thread in [thread_1, thread_2]:
             thread.daemon = True
             thread.start()
@@ -242,7 +243,31 @@ def MakeRequestHandler(query_processor):
             # Ask both backends or only the first, depending on the request.
             qp = self.query_processor
             if path.startswith("/?query="):
-                response = qp.query_both_backends_in_parallel(path)
+                # If YAML, only take the first query
+                if path.startswith("/?query=yaml"):
+                    try:
+                        log.info("YAML with two queries, trying to parse it")
+                        queries_yaml = urllib.parse.unquote(re.sub("^/\?query=", "", path))
+                        queries_yaml = re.sub("\n(LIMIT)", "\n  footer: |-\n\\1", queries_yaml)
+                        queries_yaml = re.sub("\n(PREFIX|LIMIT|OFFSET)", "\n    \\1", queries_yaml)
+                        log.debug("YAML = \n" + queries_yaml)
+                        queries = yaml.safe_load(queries_yaml)["yaml"]
+                        log.debug("QUERIES = " + str(queries))
+                        query_1 = queries["query_1"] + "\n" + queries["footer"]
+                        query_2 = queries["query_2"] + "\n" + queries["footer"]
+                        log.info("Query 1: " + re.sub("\s+", " ", query_1)[:30] + "..." + re.sub("\s+", " ", query_1)[-30:])
+                        log.info("Query 2: " + re.sub("\s+", " ", query_2)[:30] + "..." + re.sub("\s+", " ", query_2)[-30:])
+                        path_1 = "/?query=" + urllib.parse.quote(query_1)
+                        path_2 = "/?query=" + urllib.parse.quote(query_2)
+                        response = qp.query_both_backends_in_parallel(path_1, path_2)
+                    except Exception as e:
+                        log.info("\x1b[31mSomething went wrong parsing the YAML (%s)\x1b[0m" % str(e))
+                        log.info("YAML = \n" + queries_yaml)
+                        response = None
+                else:
+                    path_1 = path
+                    path_2 = path
+                    response = qp.query_both_backends_in_parallel(path_1, path_2)
             else:
                 response = qp.query_first_backend_only(path)
     
@@ -252,8 +277,9 @@ def MakeRequestHandler(query_processor):
             # not accept the result.
             if response == None:
                 self.send_response(404)
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                log.info("\x1b[41mSending 404 to caller\x1b[0m")
+                log.info("\x1b[31mSending 404 to caller\x1b[0m")
             else:
                 self.send_response(200)
                 headers_preserved = ["Content-Type", "Access-Control-Allow-Origin"]
