@@ -17,6 +17,7 @@ import threading
 import queue
 import time
 import yaml
+import json
 
 
 """ Global log """
@@ -34,7 +35,9 @@ class QleverNameService:
     """
 
     def __init__(self, backend,
-            name_predicate, name_predicate_prefix, var_suffix):
+            name_predicate, name_predicate_prefix,
+            var_suffix_id,
+            var_suffix_name):
         """
         Create with given backend. For the meaning of the other three arguments,
         see the doctest for enhance_query below.
@@ -42,7 +45,9 @@ class QleverNameService:
         self.backend = backend
         self.name_predicate = name_predicate
         self.name_predicate_prefix = name_predicate_prefix
-        self.var_suffix = var_suffix
+        self.var_suffix_id = var_suffix_id
+        self.var_suffix_name = var_suffix_name
+        self.addition_mode = "add_first_replace_others"
     
     def get_query_parts(self, sparql_query):
         """
@@ -52,17 +57,24 @@ class QleverNameService:
         that the SPARQL query is syntactically correct and no backend is needed.
 
         >>> log.setLevel(logging.ERROR)
-        >>> qns = QleverNameService(None, None, None, None)
-        >>> qns.get_query_parts(
+        >>> qns = QleverNameService(None, None, None, None, None)
+        >>> parts = qns.get_query_parts(
         ...     " PREFIX a: <bla>  PREFIX bc: <http://y> \\n"
         ...     "SELECT ?x_  ( COUNT( ?y_2) AS ?yy)  WHERE \\n"
-        ...     "{ ?x wd:P31 ?p31 { SELECT ... WHERE ... } ?p31 w:P279 ?y } "
-        ...     "O 20 L 10") # doctest: +NORMALIZE_WHITESPACE
-        [['PREFIX a: <bla>', 'PREFIX bc: <http://y>'],
-         '?x_  ( COUNT( ?y_2) AS ?yy)',
-         ['?x_', '?yy'],
-         '?x wd:P31 ?p31 { SELECT ... WHERE ... } ?p31 w:P279 ?y',
-         'O 20 L 10']
+        ...     "{ ?x wd:P31 ?p31 { SELECT ... WHERE ... } ?p31 w:P279 ?y .} "
+        ...     "GROUP BY ?yy ?x OFFSET 20 LIMIT 10") # doctest: +NORMALIZE_WHITESPACE
+        >>> parts[0]
+        ['PREFIX a: <bla>', 'PREFIX bc: <http://y>']
+        >>> parts[1]
+        '?x_ (COUNT(?y_2) AS ?yy)'
+        >>> parts[2]
+        ['?x_', '?yy']
+        >>> parts[3]
+        '?x wd:P31 ?p31 { SELECT ... WHERE ... } ?p31 w:P279 ?y'
+        >>> parts[4]
+        'GROUP BY ?yy ?x '
+        >>> parts[5]
+        'OFFSET 20 LIMIT 10'
         """
         # Get the query parts via this nice regex. Make sure that there are no
         # newline, or use the re.MULTILINE flag.
@@ -72,13 +84,39 @@ class QleverNameService:
         try:
             prefixes_list = re.split("\s+(?=PREFIX)", match_groups.group(1))
             select_vars_string = match_groups.group(2)
+            select_vars_string = re.sub("\(\s+", "(", select_vars_string)
+            select_vars_string = re.sub("\s+\)", ")", select_vars_string)
+            # For something like "( COUNT( ?y_2) AS ?yy)" extract "?yy".
             select_vars_list = re.sub(
                 "\(\s*[^(]+\s*\([^)]+\)\s*[aA][sS]\s*(\?[^)]+)\s*\)", "\\1",
                 select_vars_string).split()
             body_string = match_groups.group(3)
+            body_string = re.sub("\s+", " ", body_string)
+            body_string = re.sub("\s*\.?\s*$", "", body_string)
             footer_string = match_groups.group(4)
+
+            # If there is a GROUP BY, we need to separate it from the footer.
+            #
+            # First split by whitespace, then check whether the first two tokens
+            # are GROUP BY and if yes, collect all variables (?...) that follow.
+            # This is kind of ugly, but it works. It would be nicer to do this
+            # with a proper regex. On the other hand, maybe that's not to
+            # differnt from how a "real" parser would do it.
+            footer_string_parts = footer_string.split()
+            if len(footer_string_parts) > 2 \
+                    and footer_string_parts[0] == "GROUP" \
+                    and footer_string_parts[1] == "BY":
+                group_by_string = "GROUP BY"
+                i = 2
+                while i < len(footer_string_parts) \
+                        and footer_string_parts[i].startswith("?"):
+                    i += 1
+                group_by_string = " ".join(footer_string_parts[:i]) + " "
+                footer_string = " ".join(footer_string_parts[i:])
+            else:
+                group_by_string = ""
             return [prefixes_list, select_vars_string, select_vars_list,
-                    body_string, footer_string]
+                      body_string, group_by_string, footer_string]
         except Exception as e:
             log.error("\x1b[31mProblem parsing SPARQL query (%s)\x1b[0m" % str(e))
             log.error("SPARQL query:\n%s" % sparql_query)
@@ -117,7 +155,7 @@ class QleverNameService:
         ...     backend,
         ...     "@en@rdfs:label",
         ...     "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>",
-        ...     "_name")
+        ...     "_id", "_name")
         >>> sparql_lines = qns.enhance_query(
         ...     "PREFIX wdt: <http://www.wikidata.org/prop/direct/> "
         ...     "PREFIX wd: <http://www.wikidata.org/entity/>  "
@@ -149,26 +187,8 @@ class QleverNameService:
         start_time = time.time()
 
         # Get the various parts of the query (some as lists, some as strings).
-        prefixes_list, select_vars_string, select_vars_list, \
-                body_string, footer_string = self.get_query_parts(sparql_query)
-        body_string = re.sub("\s+", " ", body_string)
-        body_string = re.sub("\s*\.?\s*$", "", body_string)
-
-        # HACK: If there is a GROUP BY, we need to separate it from the footer.
-        footer_string_parts = footer_string.split()
-        if len(footer_string_parts) > 2 \
-                and footer_string_parts[0] == "GROUP" \
-                and footer_string_parts[1] == "BY":
-            group_by_string = "GROUP BY"
-            i = 2
-            while i < len(footer_string_parts) \
-                    and footer_string_parts[i].startswith("?"):
-                i += 1
-            group_by_string = " ".join(footer_string_parts[:i]) + " "
-            footer_string = " ".join(footer_string_parts[i:])
-        else:
-            group_by_string = ""
-        # log.info("FOOTER split: [%s, %s]" % (group_by_string, footer_string))
+        prefixes_list, select_vars_string, select_vars_list, body_string, \
+                group_by_string, footer_string = self.get_query_parts(sparql_query)
 
         # Add name_predicate_prefix if not already in list of prefixes
         #
@@ -207,34 +227,49 @@ class QleverNameService:
 
             # Now check property 2 via a SPARQL query (does it make sense to add
             # a name triple for this variable).
-            name_var_test = var + self.var_suffix
+            name_var_test = var + self.var_suffix_name
             name_triple_test = f"  {var} {self.name_predicate} {name_var_test}"
             name_test_query= self.make_name_query_from_parts(
                 prefixes_list, [name_var_test], [name_triple_test],
                 select_vars_string, body_string, group_by_string, "LIMIT 1")
+            # SPARQL query in a separate try block, so that we can give a
+            # specific error message for that.
+            response = None
             try:
                 response = self.backend.query("/?query=" +
                     urllib.parse.quote(name_test_query),
                     self.backend.timeout_seconds)
-                match = re.search("\"resultsize\"\s*:\s*(\d+)",
-                    response.data.decode("utf-8"))
-                add_name_for_this_var = int(match.group(1)) > 0
             except Exception as e:
-                log.error("\x1b[31mDid not get or could not parse result from"
-                          " backend\x1b[0m")
+                log.error("\x1b[31mCould not get result from backend\x1b[0m")
                 log.error("Error message: %s" % str(e))
                 log.error("Query was: %s" % name_test_query)
                 add_name_for_this_var = False
+            # If proper response, check the result size.
+            if response != None and response.http_response != None:
+                match = re.search("\"resultsize\"\s*:\s*(\d+)",
+                    response.http_response.data.decode("utf-8"))
+                add_name_for_this_var = True if match != None \
+                                             and len(match.groups()) > 0 \
+                                             and int(match.group(1)) > 0 \
+                                        else False
 
             # If both properties fulfilled, add the variable to the select
             # variables (at the right position) and add the name triple.
             if add_name_for_this_var:
                 log.info("Adding triple \"%s\""
                         % re.sub("^\s+", "", name_triple_test))
-                num_name_vars_added += 1
-                enhanced_select_vars_list.insert(
-                        i + num_name_vars_added, name_var_test)
                 name_triples_list.append(name_triple_test)
+                # MODE 1: Retain original variable and add name variable
+                if self.addition_mode == "add_name_variable" or \
+                        num_name_vars_added == 0:
+                    num_name_vars_added += 1
+                    enhanced_select_vars_list.insert(
+                            i + num_name_vars_added, name_var_test)
+                # MODE 2: Add name for first variable, replace others
+                else:
+                    enhanced_select_vars_list[i + num_name_vars_added] \
+                            = name_var_test
+
 
         # Add the name triples for the variables, where names exist.
         enhanced_query = self.make_name_query_from_parts(
@@ -245,6 +280,35 @@ class QleverNameService:
                  int(1000 * (end_time - start_time)))
 
         return enhanced_query
+
+class Response:
+    """
+    Own response class, so that we can also send a proper error response. Using
+    HTTPResponse, I did not manage to set the data property myself.
+
+    Contains an HTTPResponse object. If that object is None that signifies an
+    error.
+    """
+
+    def __init__(self, **kwargs):
+        """
+        Three possible keywords arguments: http_response, query_path, error_msg.
+        """
+        self.http_response = kwargs.get("http_response", None)
+        if self.http_response == None:
+            query_path = kwargs.get("query_path", "[no query path specified]")
+            error_msg = kwargs.get("error_msg", "[no error message specified]")
+            query = urllib.parse.parse_qs(query_path[2:]).get("query",
+                    "[no query specified]")
+            error_msg = "QLever Proxy error: %s" % error_msg
+            self.error_data = json.dumps({
+                    "query": query,
+                    "status": "ERROR",
+                    "resultsize": "0",
+                    "time": { "total": "0ms", "computeResult": "0ms" },
+                    "exception": error_msg })
+        else:
+            self.error_data = None
 
 
 class Backend:
@@ -316,29 +380,30 @@ class Backend:
                               else str(response.data)[:47] + "...")
             # log.debug("Content type  : %s", response.getheader("Content-Type"))
             # log.debug("All headers   : %s", response.getheaders())
-            return response
+            return Response(http_response=response)
         except socket.timeout as e:
-            log.info("%s Timeout (socket.timeout) after %.1f seconds",
-                      log_prefix, self.timeout_seconds)
-            return None
+            error_msg = "%s Timeout (socket.timeout) after %.1f seconds" \
+                    % (log_prefix, timeout)
+            log.info(error_msg)
+            return Response(query_path=query_path, error_msg=error_msg)
         except urllib3.exceptions.ReadTimeoutError as e:
-            log.info("%s Timeout (ReadTimeoutError) after %.1f seconds",
-                      log_prefix, self.timeout_seconds)
-            return None
+            error_msg = "%s Timeout (ReadTimeoutError) after %.1f seconds" \
+                    % (log_prefix, timeout)
+            log.info(error_msg)
+            return Response(query_path=query_path, error_msg=error_msg)
         except urllib3.exceptions.MaxRetryError as e:
-            log.info("%s Timeout (MaxRetryError) after %.1f seconds",
-                      log_prefix, self.timeout_seconds)
-            return None
+            error_msg = "%s Timeout (MaxRetryError) after %.1f seconds" \
+                    % (log_prefix, timeout)
+            log.info(error_msg)
+            return Response(query_path=query_path, error_msg=error_msg)
         except Exception as e:
-            log.error("%s Error with request to %s (%s)",
-                      log_prefix, self.host, str(e))
-            # log.error("%s Headers: %s", log_prefix, response.headers)
-            # log.error("%s Data: %s", log_prefix, response.data)
-            return None
+            error_msg = "%s Error with request to %s (%s)" \
+                    % (log_prefix, self.host, str(e))
+            log.info(error_msg)
+            return Response(query_path=query_path, error_msg=error_msg)
 
 
-class TwoBackendQueryProcessor:
-
+class QueryProcessor:
     """
     Class for sending a query to one or both backends, each with a timeout.
 
@@ -347,7 +412,7 @@ class TwoBackendQueryProcessor:
     fallback). In the worst case, both backends fail.
     """
 
-    def __init__(self, backend_1, backend_2, add_name_triples):
+    def __init__(self, backend_1, backend_2, timeout_normal, add_name_triples):
         """
         Create the two backends using the class above. Also create a
         QleverNameService in case we need it (costs nothing to create, just
@@ -355,12 +420,13 @@ class TwoBackendQueryProcessor:
         """
         self.backend_1 = backend_1
         self.backend_2 = backend_2
+        self.timeout_normal = timeout_normal
         self.add_name_triples = add_name_triples
         self.qlever_name_service = QleverNameService(
                 backend_2,
                 "@en@rdfs:label",
                 "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>",
-                "_name")
+                "_id", "_name")
 
     def query(self, path):
         """
@@ -369,7 +435,7 @@ class TwoBackendQueryProcessor:
         1. If the query starts with yaml: then it's actually a yaml containing
         two queries, one for each backend
 
-        2. Otherwise send the same query to both backends.
+        2. Otherwise send the query to backend 1, with timeout_normal
         """
         # CASE 1: a YAML containing information about two SPARQL queries, one
         # for each backend.
@@ -390,17 +456,19 @@ class TwoBackendQueryProcessor:
                            + "..." + re.sub("\s+", " ", query_2)[-30:])
                 path_1 = "/?query=" + urllib.parse.quote(query_1)
                 path_2 = "/?query=" + urllib.parse.quote(query_2)
-                response = self.query_backends_in_parallel(path_1, path_2)
+                return self.query_backends_in_parallel(path_1, path_2)
             except Exception as e:
-                log.info("\x1b[31mError parsing the YAML string (%s)\x1b[0m" % str(e))
+                error_msg = "\x1b[31mError parsing the YAML string (%s)\x1b[0m" % str(e)
+                log.info(error_msg)
                 log.info("YAML = \n" + queries_yaml)
-                response = None
-        # CASE 2: An ordinary SPARQL query, which we send to backend 1. If
-        # add_name_triples, try to enhance the query with the QleverNameService.
+                return Response(query_path=y_path, error_msg=error_msg)
+        # CASE 2: An ordinary query, which we send to backend 1. This can be a
+        # SPARQL query or a command like /?cmd=stats or /?cmd=clearcache
         else:
-            # If add_name_triples, see if we can add name triples to the
-            # query. Note: there can be more &... arguments in the end
-            if self.add_name_triples:
+            # If SPARQL query and add_name_triples, see if we can add name
+            # triples to the query. Note: there can be more &. arguments in the
+            # end
+            if path.startswith("/?query=") and self.add_name_triples:
                 # Note that parse_qsl creates a list of key-value pairs and also
                 # automatically unquotes (and urlencode quotes again).
                 parameters = urllib.parse.parse_qsl(path[2:])
@@ -411,11 +479,8 @@ class TwoBackendQueryProcessor:
                 log.info("Enhanced SPARQL query: %s"
                         % re.sub("\s+", " ", new_sparql_query))
                 parameters[0] = ("query", new_sparql_query)
-                new_path = "/?" + urllib.parse.urlencode(parameters)
-                response = backend_1.query(new_path, backend_1.timeout_seconds)
-
-        # Return the response (None, if something went wrong).
-        return response
+                path = "/?" + urllib.parse.urlencode(parameters)
+            return backend_1.query(path, self.timeout_normal)
 
 
     def query_backends_in_parallel(self, path_1, path_2):
@@ -443,21 +508,21 @@ class TwoBackendQueryProcessor:
         # 2. Backend 1 first, no response -> wait for Backend 2
         # 3. Backend 2 first -> wait for Backend 1 and prefer if response
         response, backend_id = result_queue.get()
-        if backend_id == 1 and response == None:
+        if backend_id == 1 and response.http_response == None:
             response, backend_id = result_queue.get()
         elif backend_id == 2:
             log.info("Backend 2 responded first -> give Backend 1 a chance, too")
             response_2, backend_id_2 = result_queue.get()
-            if response_2 != None:
+            if response_2.http_response != None:
                 response, backend_id = response_2, backend_id_2
 
         # We now have three cases:
         # 1. We have a response from  backend 1 (best case)
         # 2. No response from backend 1, but from backend 2 (fallback case)
         # 3. No response from either backend (worst case)
-        if response != None and backend_id == 1:
+        if response.http_response != None and backend_id == 1:
             log.info("BEST CASE: Backend 1 responded in time")
-        elif response != None and backend_id == 2:
+        elif response.http_response != None and backend_id == 2:
             log.info("FALLBACK: Backend 1 did not respond in time, "
                      "taking result from Backend 2")
         else:
@@ -467,7 +532,7 @@ class TwoBackendQueryProcessor:
         return response
 
 
-def MakeRequestHandler(backend_1, backend_2, add_name_triples):
+def MakeRequestHandler(backend_1, backend_2, timeout_normal, add_name_triples):
     """
     Returns a RequestHandler class for handling GET requests to the proxy for
     using the given backends.
@@ -492,8 +557,8 @@ def MakeRequestHandler(backend_1, backend_2, add_name_triples):
             """
             self.backend_1 = backend_1
             self.backend_2 = backend_2
-            self.two_backend_query_processor = TwoBackendQueryProcessor(
-                    backend_1, backend_2, add_name_triples)
+            self.query_processor = QueryProcessor(
+                    backend_1, backend_2, timeout_normal, add_name_triples)
             super(RequestHandler, self).__init__(*args, **kwargs)
     
         def log_message(self, format_string, *args):
@@ -519,34 +584,34 @@ def MakeRequestHandler(backend_1, backend_2, add_name_triples):
                         % (path if len(path) < 50 else path[:47] + "..."))
             log.debug("Headers: %s" % headers)
     
-            # Queries are dealt with by the two backend query processor, all
-            # other queries (e.g. /?cmd=stats or /cmd=clearcache) are handled by
-            # backend 1.
-            if path.startswith("/?query="):
-                response = self.two_backend_query_processor.query(path)
-            else:
-                response = backend_1.query(path, backend_1.timeout_seconds)
+            # Process query. The query process will decided whether to ask both
+            # backends in parallel, whether to call the QLever Name Service,
+            # etc. If something goes wrong, the response is None.
+            response = self.query_processor.query(path)
     
-            # If no response, send 404, otherwise forward to caller, including
-            # selected headers.
-            # NOTE: without the Access-Control-Allow-Origin, the QLever UI will
-            # not accept the result.
-            if response == None:
-                self.send_response(404)
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-                log.info("\x1b[31mSending 404 to caller\x1b[0m")
-            else:
+            # For both case below, the QLever UI will only accept the response
+            # when there is a Access-Control-Allow-Origin header.
+            #
+            # If we have a HTTPResponse, forward to caller, including selected headers.
+            if response.http_response != None:
                 self.send_response(200)
                 headers_preserved = ["Content-Type", "Access-Control-Allow-Origin"]
                 for header_key in headers_preserved:
-                    header_value = response.getheader(header_key)
+                    header_value = response.http_response.getheader(header_key)
                     if header_value != None:
                         self.send_header(header_key, header_value)
                 self.end_headers()
-                self.wfile.write(response.data)
+                self.wfile.write(response.http_response.data)
                 log.debug("Forwarded result to caller"
                           " (headers preserved: %s)" % ", ".join(headers_preserved))
+            # Otherwise, send an error message
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(response.error_data.encode("utf-8"))
+                log.info("\x1b[31mSending QLever error JSON to caller\x1b[0m")
 
             end_time = time.time()
             log.info("\x1b[1mTotal time spend on request: %dms\x1b[0m",
@@ -556,7 +621,8 @@ def MakeRequestHandler(backend_1, backend_2, add_name_triples):
     return RequestHandler
 
 
-def server_loop(hostname, port, backend_1, backend_2, add_name_triples):
+def server_loop(hostname, port, backend_1, backend_2,
+        timeout_normal, add_name_triples):
     """
     Create a HTTP server that listens and respond to queries for the given
     hostname under the given port, using the request handler above. Runs in an
@@ -565,7 +631,7 @@ def server_loop(hostname, port, backend_1, backend_2, add_name_triples):
 
     server_address = (hostname, port)
     request_handler_class = MakeRequestHandler(
-            backend_1, backend_2, add_name_triples)
+            backend_1, backend_2, timeout_normal, add_name_triples)
     server = http.server.HTTPServer(server_address, request_handler_class)
     log.info("Listening to GET requests on %s:%d" % (hostname, port))
     server.serve_forever()
@@ -597,16 +663,21 @@ if __name__ == "__main__":
             " does not respond in time")
     parser.add_argument(
             "--timeout-1", dest="timeout_1", type=float, default=0.5,
-            help="Timeout for Backend 1")
+            help="Timeout for Backend 1, when asking parallel queries")
     parser.add_argument(
             "--timeout-2", dest="timeout_2", type=float, default=5.0,
-            help="Timeout for Backend 2")
+            help="Timeout for Backend 2, when asking parallel queries")
+    parser.add_argument(
+            "--timeout", dest="timeout_normal", type=float, default=10.0,
+            help="Timeout for Backend 1, when asking ordinary queries")
 
     args = parser.parse_args(sys.argv[1:])
 
     # Create backends. The third argument is the id (1 = primary, 2 = fallback)
     backend_1 = Backend(args.backend_1, args.timeout_1, 1)
     backend_2 = Backend(args.backend_2, args.timeout_2, 2)
+    log.info("Timeout for single-backend queries is %.1fs" %
+            args.timeout_normal)
 
     # Communicate wheter Qlever Name Service is active or not.
     if args.add_name_triples:
@@ -617,4 +688,5 @@ if __name__ == "__main__":
 
     # Listen and respond to queries at that port, no matter to which hostname on
     # this machine the were directed.
-    server_loop("0.0.0.0", args.port, backend_1, backend_2, args.add_name_triples)
+    server_loop("0.0.0.0", args.port, backend_1, backend_2,
+            args.timeout_normal, args.add_name_triples)
