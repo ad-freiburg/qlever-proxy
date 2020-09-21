@@ -4,6 +4,7 @@ Chair of Algorithms and Data Structures
 Author: Hannah Bast <bast@cs.uni-freiburg.de>
 """
 
+import argparse
 import sys
 import logging
 import http.server
@@ -32,7 +33,7 @@ class SPARQLQueryExtender:
     Class for extending a SPARQL Query by adding name triples.
     """
 
-    def __init__(self, backend=None):
+    def __init__(self, backend):
         """
         Create object with given query processor. Needed to find out for which
         variables in a query, a name triple makes sense (we launch a suitable 
@@ -41,20 +42,17 @@ class SPARQLQueryExtender:
         TODO: for now, hard-code the backend. This should eventually be passed
         to the constructor.
         """
-        self.timeout_seconds = 10
-        self.backend = backend if backend != None else Backend(
-                "qlever.cs.uni-freiburg.de", 443,
-                "/api/wikidata", self.timeout_seconds, 1)
+        self.backend = backend
     
     def get_query_parts(self, sparql_query):
         """
         Split a SPARQL query into parts. Returns the variables from the SELECT
         clause, the query without the final part (after the last closing curly
-        brace), and the final part. Note that for the test, it's not important
-        that the SPARQL query is syntactically correct.
+        brace), and the final part. Note that for this test, it's not important
+        that the SPARQL query is syntactically correct and no backend is needed.
 
         >>> log.setLevel(logging.ERROR)
-        >>> sqe = SPARQLQueryExtender()
+        >>> sqe = SPARQLQueryExtender(None)
         >>> sqe.get_query_parts(" PREFIX a: <bla>  PREFIX bc: <http://y> "
         ...                     "SELECT ?x_  ( COUNT( ?y_2) AS ?yy)  WHERE "
         ...                     "{ ?x wd:P31 ?p31 { SELECT ... WHERE ... } ?p31 w:P279 ?y } "
@@ -110,9 +108,9 @@ class SPARQLQueryExtender:
         next to the id column) with that name.
 
         >>> log.setLevel(logging.ERROR)
-        >>> sqe = SPARQLQueryExtender()
-        >>> backend = Backend("qlever.cs.uni-freiburg.de", 443,
-        ...                      "/api/wikidata", 1, 0)
+        >>> backend = Backend(
+        ...     "https://qlever.cs.uni-freiburg.de:443/api/wikidata", 1, 0)
+        >>> sqe = SPARQLQueryExtender(backend)
         >>> sparql_lines = sqe.query_enhanced_by_names(
         ...     "PREFIX wdt: <http://www.wikidata.org/prop/direct/> "
         ...     "PREFIX wd: <http://www.wikidata.org/entity/>  "
@@ -192,13 +190,14 @@ class SPARQLQueryExtender:
                 select_vars_string, body_string, "LIMIT 1")
             try:
                 response = self.backend.query("/?query=" +
-                    urllib.parse.quote(name_test_query), self.timeout_seconds)
+                    urllib.parse.quote(name_test_query),
+                    self.backend.timeout_seconds)
                 match = re.search("\"resultsize\"\s*:\s*(\d+)",
                     response.data.decode("utf-8"))
                 add_name_for_this_var = int(match.group(1)) > 0
             except Exception as e:
                 log.error("\x1b[31mDid not get or could not parse result from"
-                          "backend\x1b[0m")
+                          " backend\x1b[0m")
                 log.error("Error message: %s" % str(e))
                 log.error("Query was: %s" % name_test_query)
                 add_name_for_this_var = False
@@ -227,15 +226,15 @@ class Backend:
     evaluation, where a first version of this code has been copied from.
     """
 
-    def __init__(self, host, port, base_path, timeout_seconds, backend_id):
+    def __init__(self, backend_url, timeout_seconds, backend_id):
         """
-        Create HTTP connection pool for asking request to
-        http(s):<host>:<port>/<base_path>
+        Create HTTP connection pool for asking request to this backend.
         """
 
-        self.host = host
-        self.port = port
-        self.base_path = base_path
+        backend_url_parsed = urllib.parse.urlparse(backend_url)
+        self.host, self.port = backend_url_parsed.netloc.split(':')
+        self.base_path = backend_url_parsed.path if backend_url_parsed.path else "/"
+        self.port = int(self.port) if self.port else 80
         self.timeout_seconds = timeout_seconds
         self.backend_id = backend_id
 
@@ -252,7 +251,7 @@ class Backend:
 
         # Log what we have created.
         log.info("Backend %d: %s:%d%s with timeout %.1fs",
-             backend_id, host, port, base_path, timeout_seconds)
+             backend_id, self.host, self.port, self.base_path, timeout_seconds)
 
     def query_and_write_to_queue(self, query_path, timeout, queue):
         """ 
@@ -307,7 +306,8 @@ class Backend:
             # log.error("%s Data: %s", log_prefix, response.data)
             return None
 
-class QueryProcessor:
+
+class TwoBackendQueryProcessor:
 
     """
     Class for sending a query to one or both backends, each with a timeout.
@@ -317,27 +317,57 @@ class QueryProcessor:
     fallback). In the worst case, both backends fail.
     """
 
-    def __init__(self):
+    def __init__(self, backend_1, backend_2):
         """
         Create the two backends using the class above.
         """
-        # The first backend ("primary") has a timeout of 2 seconds.
-        self.timeout_single_query = 10.0
-        self.timeout_backend_1 = 0.5
-        self.timeout_backend_2 = 5.0
-        self.backend_1 = Backend("qlever.cs.uni-freiburg.de", 443,
-                                 "/api/wikidata",
-                                 self.timeout_backend_1, 1)
-        # The second backend ("fallback") has a timeout of 5 seconds.
-        self.backend_2 = Backend("qlever.cs.uni-freiburg.de", 443,
-                                 "/api/wikidata-vulcano",
-                                 self.timeout_backend_2, 2)
+        self.backend_1 = backend_1
+        self.backend_2 = backend_2
 
-    def query_first_backend_only(self, path_1):
-        """ Query first backend. """
-        return self.backend_1.query(path_1, self.timeout_backend_1)
+    def query(self, path):
+        """
+        Decide what to do depending on the form of the query:
 
-    def query_both_backends_in_parallel(self, path_1, path_2):
+        1. If the query starts with yaml: then it's actually a yaml containing
+        two queries, one for each backend
+
+        2. Otherwise send the same query to both backends.
+        """
+        # CASE 1: a YAML containing information about two SPARQL queries, one
+        # for each backend.
+        if path.startswith("/?query=yaml"):
+            try:
+                log.info("YAML with two queries, trying to parse it")
+                queries_yaml = urllib.parse.unquote(re.sub("^/\?query=", "", path))
+                queries_yaml = re.sub("\n(LIMIT)", "\n  footer: |-\n\\1", queries_yaml)
+                queries_yaml = re.sub("\n(PREFIX|LIMIT|OFFSET)", "\n    \\1", queries_yaml)
+                log.debug("YAML = \n" + queries_yaml)
+                queries = yaml.safe_load(queries_yaml)["yaml"]
+                log.debug("QUERIES = " + str(queries))
+                query_1 = queries["query_1"] + "\n" + queries["footer"]
+                query_2 = queries["query_2"] + "\n" + queries["footer"]
+                log.info("Query 1: " + re.sub("\s+", " ", query_1)[:30] \
+                           + "..." + re.sub("\s+", " ", query_1)[-30:])
+                log.info("Query 2: " + re.sub("\s+", " ", query_2)[:30] \
+                           + "..." + re.sub("\s+", " ", query_2)[-30:])
+                path_1 = "/?query=" + urllib.parse.quote(query_1)
+                path_2 = "/?query=" + urllib.parse.quote(query_2)
+                response = self.query_backends_in_parallel(path_1, path_2)
+            except Exception as e:
+                log.info("\x1b[31mError parsing the YAML string (%s)\x1b[0m" % str(e))
+                log.info("YAML = \n" + queries_yaml)
+                response = None
+        # CASE 2: an ordinary SPARQL query, which we send to both backends.
+        else:
+            path_1 = path
+            path_2 = path
+            response = self.query_backends_in_parallel(path_1, path_2)
+
+        # Return the response (None, if something went wrong).
+        return response
+
+
+    def query_backends_in_parallel(self, path_1, path_2):
         """
         Query both backends in parallel with a preference for a result from the
         first backend, as explained above.
@@ -348,10 +378,10 @@ class QueryProcessor:
         result_queue = queue.Queue()
         thread_1 = threading.Thread(
                 target=self.backend_1.query_and_write_to_queue,
-                args=(path_1, self.timeout_backend_1, result_queue))
+                args=(path_1, self.backend_1.timeout_seconds, result_queue))
         thread_2 = threading.Thread(
                 target=self.backend_2.query_and_write_to_queue,
-                args=(path_2, self.timeout_backend_2, result_queue))
+                args=(path_2, self.backend_2.timeout_seconds, result_queue))
         for thread in [thread_1, thread_2]:
             thread.daemon = True
             thread.start()
@@ -386,16 +416,16 @@ class QueryProcessor:
         return response
 
 
-def MakeRequestHandler(query_processor):
+def MakeRequestHandler(backend_1, backend_2, add_name_triples):
     """
     Returns a RequestHandler class for handling GET requests to the proxy for
-    using the given query processor.
+    using the given backends.
 
     NOTE: This function returns a class ("class factory pattern"). I did this so
-    that I can give the class access to a particular QueryProcessor object,
-    since the class has to be a subclass of http.server.BaseHTTPRequestHandler,
-    I did not see an easier way (except making the QueryProcessor object global,
-    which would be a ugly solution, however).
+    that I can pass the information about the backends. This was not trivial,
+    since the class has to be a subclass of http.server.BaseHTTPRequestHandler.
+    I did not see an easier way (except for making the information about the
+    backends global, which would be an ugly solution).
     """
 
     class RequestHandler(http.server.BaseHTTPRequestHandler):
@@ -409,7 +439,11 @@ def MakeRequestHandler(query_processor):
             NOTE: The call to super().__init__ must come at the end because
             (confusingly) do_GET is called during BaseHTTPRequestHandler.__init__
             """
-            self.query_processor = query_processor
+            self.backend_1 = backend_1
+            self.backend_2 = backend_2
+            self.add_name_triples = add_name_triples
+            self.two_backend_query_processor = \
+                    TwoBackendQueryProcessor(backend_1, backend_2)
             super(RequestHandler, self).__init__(*args, **kwargs)
     
         def log_message(self, format_string, *args):
@@ -435,36 +469,13 @@ def MakeRequestHandler(query_processor):
                         % (path if len(path) < 50 else path[:47] + "..."))
             log.debug("Headers: %s" % headers)
     
-            # Ask both backends or only the first, depending on the request.
-            qp = self.query_processor
+            # Queries are dealt with by the two backend query processor, all
+            # other queries (e.g. /?cmd=stats or /cmd=clearcache) are handled by
+            # backend 1.
             if path.startswith("/?query="):
-                # If YAML, only take the first query
-                if path.startswith("/?query=yaml"):
-                    try:
-                        log.info("YAML with two queries, trying to parse it")
-                        queries_yaml = urllib.parse.unquote(re.sub("^/\?query=", "", path))
-                        queries_yaml = re.sub("\n(LIMIT)", "\n  footer: |-\n\\1", queries_yaml)
-                        queries_yaml = re.sub("\n(PREFIX|LIMIT|OFFSET)", "\n    \\1", queries_yaml)
-                        log.debug("YAML = \n" + queries_yaml)
-                        queries = yaml.safe_load(queries_yaml)["yaml"]
-                        log.debug("QUERIES = " + str(queries))
-                        query_1 = queries["query_1"] + "\n" + queries["footer"]
-                        query_2 = queries["query_2"] + "\n" + queries["footer"]
-                        log.info("Query 1: " + re.sub("\s+", " ", query_1)[:30] + "..." + re.sub("\s+", " ", query_1)[-30:])
-                        log.info("Query 2: " + re.sub("\s+", " ", query_2)[:30] + "..." + re.sub("\s+", " ", query_2)[-30:])
-                        path_1 = "/?query=" + urllib.parse.quote(query_1)
-                        path_2 = "/?query=" + urllib.parse.quote(query_2)
-                        response = qp.query_both_backends_in_parallel(path_1, path_2)
-                    except Exception as e:
-                        log.info("\x1b[31mSomething went wrong parsing the YAML (%s)\x1b[0m" % str(e))
-                        log.info("YAML = \n" + queries_yaml)
-                        response = None
-                else:
-                    path_1 = path
-                    path_2 = path
-                    response = qp.query_both_backends_in_parallel(path_1, path_2)
+                response = self.two_backend_query_processor.query(path)
             else:
-                response = qp.query_first_backend_only(path)
+                response = backend_1.query(path, backend_1.timeout_seconds)
     
             # If no response, send 404, otherwise forward to caller, including
             # selected headers.
@@ -495,7 +506,7 @@ def MakeRequestHandler(query_processor):
     return RequestHandler
 
 
-def server_loop(hostname, port):
+def server_loop(hostname, port, backend_1, backend_2, add_name_triples):
     """
     Create a HTTP server that listens and respond to queries for the given
     hostname under the given port, using the request handler above. Runs in an
@@ -503,20 +514,50 @@ def server_loop(hostname, port):
     """
 
     server_address = (hostname, port)
-    query_processor = QueryProcessor()
-    request_handler_class = MakeRequestHandler(query_processor)
+    request_handler_class = MakeRequestHandler(
+            backend_1, backend_2, add_name_triples)
     server = http.server.HTTPServer(server_address, request_handler_class)
     log.info("Listening to GET requests on %s:%d" % (hostname, port))
     server.serve_forever()
 
 
 if __name__ == "__main__":
+
     # Parse command line arguments + usage info.
-    if len(sys.argv) != 2:
-        print("Usage: python3 qlever-proxy.py <port>")
-        sys.exit(1)
-    port = int(sys.argv[1])
+    parser = argparse.ArgumentParser(
+            description="QLever Proxy, see the README.md for more information")
+
+    parser.add_argument(
+            "--port", dest="port", type=int, default=8904,
+            help="Run proxy on this port")
+    parser.add_argument(
+            "--add-name-triples", dest="add_name_triples",
+            type=bool, default=True,
+            help="Automatically add name meaningful triples"
+            " (for each variable, where a triple like rdfs:label"
+            " does not yet exist, but would lead to a result)")
+    parser.add_argument(
+            "--backend-1", dest="backend_1", type=str,
+            default="https://qlever.cs.uni-freiburg.de:443/api/wikidata",
+            help="Primary backend (prefer if it responds in time)")
+    parser.add_argument(
+            "--backend-2", dest="backend_2", type=str,
+            default="https://qlever.cs.uni-freiburg.de:443/api/wikidata-vulcano",
+            help="Fallback backend (ask simpler query, when Backend 1"
+            " does not respond in time")
+    parser.add_argument(
+            "--timeout-1", dest="timeout_1", type=float, default=0.5,
+            help="Timeout for Backend 1")
+    parser.add_argument(
+            "--timeout-2", dest="timeout_2", type=float, default=5.0,
+            help="Timeout for Backend 2")
+
+    args = parser.parse_args(sys.argv[1:])
+
+    # Create backends. The third argument is the id (1 = primary, 2 = fallback)
+    backend_1 = Backend(args.backend_1, args.timeout_1, 1)
+    backend_2 = Backend(args.backend_2, args.timeout_2, 2)
 
     # Listen and respond to queries at that port, no matter to which hostname on
     # this machine the were directed.
-    server_loop("0.0.0.0", port)
+    server_loop("0.0.0.0", args.port, backend_1, backend_2, args.add_name_triples)
