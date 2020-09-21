@@ -28,21 +28,21 @@ handler.setFormatter(logging.Formatter(
 log.addHandler(handler)
    
 
-class SPARQLQueryExtender:
+class QleverNameService:
     """
     Class for extending a SPARQL Query by adding name triples.
     """
 
-    def __init__(self, backend):
+    def __init__(self, backend,
+            name_predicate, name_predicate_prefix, var_suffix):
         """
-        Create object with given query processor. Needed to find out for which
-        variables in a query, a name triple makes sense (we launch a suitable 
-        SPARQL query for that).
-
-        TODO: for now, hard-code the backend. This should eventually be passed
-        to the constructor.
+        Create with given backend. For the meaning of the other three arguments,
+        see the doctest for enhance_query below.
         """
         self.backend = backend
+        self.name_predicate = name_predicate
+        self.name_predicate_prefix = name_predicate_prefix
+        self.var_suffix = var_suffix
     
     def get_query_parts(self, sparql_query):
         """
@@ -52,21 +52,23 @@ class SPARQLQueryExtender:
         that the SPARQL query is syntactically correct and no backend is needed.
 
         >>> log.setLevel(logging.ERROR)
-        >>> sqe = SPARQLQueryExtender(None)
-        >>> sqe.get_query_parts(" PREFIX a: <bla>  PREFIX bc: <http://y> "
-        ...                     "SELECT ?x_  ( COUNT( ?y_2) AS ?yy)  WHERE "
-        ...                     "{ ?x wd:P31 ?p31 { SELECT ... WHERE ... } ?p31 w:P279 ?y } "
-        ...                     "O 20 L 10") # doctest: +NORMALIZE_WHITESPACE
+        >>> qns = QleverNameService(None, None, None, None)
+        >>> qns.get_query_parts(
+        ...     " PREFIX a: <bla>  PREFIX bc: <http://y> \\n"
+        ...     "SELECT ?x_  ( COUNT( ?y_2) AS ?yy)  WHERE \\n"
+        ...     "{ ?x wd:P31 ?p31 { SELECT ... WHERE ... } ?p31 w:P279 ?y } "
+        ...     "O 20 L 10") # doctest: +NORMALIZE_WHITESPACE
         [['PREFIX a: <bla>', 'PREFIX bc: <http://y>'],
          '?x_  ( COUNT( ?y_2) AS ?yy)',
          ['?x_', '?yy'],
          '?x wd:P31 ?p31 { SELECT ... WHERE ... } ?p31 w:P279 ?y',
          'O 20 L 10']
         """
-        # Get the query parts via this nice regex.
+        # Get the query parts via this nice regex. Make sure that there are no
+        # newline, or use the re.MULTILINE flag.
         match_groups = re.match(
-            "^\s*(.*?)\s*SELECT\s+(\S[^{]*\S)\s*WHERE\s*\{\s*(\S.*\S)\s*}\s*(.*?)\s*$",
-            sparql_query)
+            "^\s*(.*?)\s*SELECT\s+(\S[^{]*\S)\s*WHERE\s*{\s*(\S.*\S)\s*}\s*(.*?)\s*$",
+            re.sub("\s+", " ", sparql_query))
         try:
             prefixes_list = re.split("\s+(?=PREFIX)", match_groups.group(1))
             select_vars_string = match_groups.group(2)
@@ -77,13 +79,15 @@ class SPARQLQueryExtender:
             footer_string = match_groups.group(4)
             return [prefixes_list, select_vars_string, select_vars_list,
                     body_string, footer_string]
-        except:
-            log.error("Problem parsing SPARQL query (%s)", str(e))
+        except Exception as e:
+            log.error("\x1b[31mProblem parsing SPARQL query (%s)\x1b[0m" % str(e))
+            log.error("SPARQL query:\n%s" % sparql_query)
+            log.error("Match groups: %s" % str(match_groups.groups()))
             return None
 
     def make_name_query_from_parts(self,
             prefixes_list, name_vars_list, name_triples_list,
-            select_vars_string, body_string, footer_string):
+            select_vars_string, body_string, group_by_string, footer_string):
         """
         Build query from the given parts. It should be self-explanatory from the
         return-statement, how the parts are synthesized. The arguments with
@@ -91,17 +95,16 @@ class SPARQLQueryExtender:
         """
         prefixes_string = "\n".join(prefixes_list)
         name_vars_string = " ".join(name_vars_list)
-        name_triples_string = "\n".join(name_triples_list)
+        name_triples_string = " .\n".join(name_triples_list)
         return f"{prefixes_string}\n" \
                f"SELECT {name_vars_string} WHERE {{\n" \
                f"  {{ SELECT {select_vars_string} WHERE {{\n" \
-               f"    {body_string} }} }}\n" \
+               f"    {body_string} }} {group_by_string}}}\n" \
                f"{name_triples_string}\n" \
                f"}} {footer_string}"
 
 
-    def query_enhanced_by_names(self, sparql_query, name_predicate,
-                               name_predicate_prefix, var_suffix, backend):
+    def enhance_query(self, sparql_query):
         """
         Enhance the query, so that in the result for each columns with an ID
         that also has a name (via name_predicate) there is also a column (right
@@ -110,20 +113,20 @@ class SPARQLQueryExtender:
         >>> log.setLevel(logging.ERROR)
         >>> backend = Backend(
         ...     "https://qlever.cs.uni-freiburg.de:443/api/wikidata", 1, 0)
-        >>> sqe = SPARQLQueryExtender(backend)
-        >>> sparql_lines = sqe.query_enhanced_by_names(
+        >>> qns = QleverNameService(
+        ...     backend,
+        ...     "@en@rdfs:label",
+        ...     "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>",
+        ...     "_name")
+        >>> sparql_lines = qns.enhance_query(
         ...     "PREFIX wdt: <http://www.wikidata.org/prop/direct/> "
         ...     "PREFIX wd: <http://www.wikidata.org/entity/>  "
         ...     "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>"
         ...     "SELECT ?x ?y ?y_label WHERE {"
         ...     "  ?x wdt:P31 wd:Q5 ."
         ...     "  ?x wdt:P17 ?y ."
-        ...     "  ?y rdfs:label ?y_label"
-        ...     "} LIMIT 10 ",
-        ...     "@en@rdfs:label",
-        ...     "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>",
-        ...     "_name",
-        ...     backend).split("\\n")
+        ...     "  ?y rdfs:label ?y_label ."
+        ...     "} LIMIT 10 ").split("\\n")
         >>> len(sparql_lines)
         8
         >>> sparql_lines[:3] # doctest: +NORMALIZE_WHITESPACE
@@ -142,18 +145,39 @@ class SPARQLQueryExtender:
         '} LIMIT 10'
         """
 
+        log.info("QLever Name Service: check which name triples can be added")
+        start_time = time.time()
+
         # Get the various parts of the query (some as lists, some as strings).
         prefixes_list, select_vars_string, select_vars_list, \
                 body_string, footer_string = self.get_query_parts(sparql_query)
         body_string = re.sub("\s+", " ", body_string)
+        body_string = re.sub("\s*\.?\s*$", "", body_string)
+
+        # HACK: If there is a GROUP BY, we need to separate it from the footer.
+        footer_string_parts = footer_string.split()
+        if len(footer_string_parts) > 2 \
+                and footer_string_parts[0] == "GROUP" \
+                and footer_string_parts[1] == "BY":
+            group_by_string = "GROUP BY"
+            i = 2
+            while i < len(footer_string_parts) \
+                    and footer_string_parts[i].startswith("?"):
+                i += 1
+            group_by_string = " ".join(footer_string_parts[:i]) + " "
+            footer_string = " ".join(footer_string_parts[i:])
+        else:
+            group_by_string = ""
+        # log.info("FOOTER split: [%s, %s]" % (group_by_string, footer_string))
+
         # Add name_predicate_prefix if not already in list of prefixes
         #
         # TODO: The following is not correct in case the prefix is already in
         # the list, but with a different definition. The result will be that no
         # result will be found for any of the name probe queries below and no
         # name triples will be added to the query.
-        if not name_predicate_prefix in prefixes_list:
-            prefixes_list.add(name_predicate_prefix)
+        if not self.name_predicate_prefix in prefixes_list:
+            prefixes_list.append(self.name_predicate_prefix)
 
         # Iterate over all variables from the SELECT clause of the original
         # query and check two things:
@@ -183,11 +207,11 @@ class SPARQLQueryExtender:
 
             # Now check property 2 via a SPARQL query (does it make sense to add
             # a name triple for this variable).
-            name_var_test = var + var_suffix
-            name_triple_test = f"  {var} {name_predicate} {name_var_test}"
+            name_var_test = var + self.var_suffix
+            name_triple_test = f"  {var} {self.name_predicate} {name_var_test}"
             name_test_query= self.make_name_query_from_parts(
                 prefixes_list, [name_var_test], [name_triple_test],
-                select_vars_string, body_string, "LIMIT 1")
+                select_vars_string, body_string, group_by_string, "LIMIT 1")
             try:
                 response = self.backend.query("/?query=" +
                     urllib.parse.quote(name_test_query),
@@ -205,6 +229,8 @@ class SPARQLQueryExtender:
             # If both properties fulfilled, add the variable to the select
             # variables (at the right position) and add the name triple.
             if add_name_for_this_var:
+                log.info("Adding triple \"%s\""
+                        % re.sub("^\s+", "", name_triple_test))
                 num_name_vars_added += 1
                 enhanced_select_vars_list.insert(
                         i + num_name_vars_added, name_var_test)
@@ -213,7 +239,11 @@ class SPARQLQueryExtender:
         # Add the name triples for the variables, where names exist.
         enhanced_query = self.make_name_query_from_parts(
                 prefixes_list, enhanced_select_vars_list, name_triples_list,
-                select_vars_string, body_string, footer_string)
+                select_vars_string, body_string, group_by_string, footer_string)
+        end_time = time.time()
+        log.info("Total time spent on name service: %dms",
+                 int(1000 * (end_time - start_time)))
+
         return enhanced_query
 
 
@@ -317,12 +347,20 @@ class TwoBackendQueryProcessor:
     fallback). In the worst case, both backends fail.
     """
 
-    def __init__(self, backend_1, backend_2):
+    def __init__(self, backend_1, backend_2, add_name_triples):
         """
-        Create the two backends using the class above.
+        Create the two backends using the class above. Also create a
+        QleverNameService in case we need it (costs nothing to create, just
+        copies the arguments to the class, see above).
         """
         self.backend_1 = backend_1
         self.backend_2 = backend_2
+        self.add_name_triples = add_name_triples
+        self.qlever_name_service = QleverNameService(
+                backend_2,
+                "@en@rdfs:label",
+                "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>",
+                "_name")
 
     def query(self, path):
         """
@@ -357,11 +395,24 @@ class TwoBackendQueryProcessor:
                 log.info("\x1b[31mError parsing the YAML string (%s)\x1b[0m" % str(e))
                 log.info("YAML = \n" + queries_yaml)
                 response = None
-        # CASE 2: an ordinary SPARQL query, which we send to both backends.
+        # CASE 2: An ordinary SPARQL query, which we send to backend 1. If
+        # add_name_triples, try to enhance the query with the QleverNameService.
         else:
-            path_1 = path
-            path_2 = path
-            response = self.query_backends_in_parallel(path_1, path_2)
+            # If add_name_triples, see if we can add name triples to the
+            # query. Note: there can be more &... arguments in the end
+            if self.add_name_triples:
+                # Note that parse_qsl creates a list of key-value pairs and also
+                # automatically unquotes (and urlencode quotes again).
+                parameters = urllib.parse.parse_qsl(path[2:])
+                sparql_query = parameters[0][1]
+                # log.info("SPARQL query before enhancing:\n%s" % sparql_query)
+                new_sparql_query = \
+                        self.qlever_name_service.enhance_query(sparql_query)
+                log.info("Enhanced SPARQL query: %s"
+                        % re.sub("\s+", " ", new_sparql_query))
+                parameters[0] = ("query", new_sparql_query)
+                new_path = "/?" + urllib.parse.urlencode(parameters)
+                response = backend_1.query(new_path, backend_1.timeout_seconds)
 
         # Return the response (None, if something went wrong).
         return response
@@ -441,9 +492,8 @@ def MakeRequestHandler(backend_1, backend_2, add_name_triples):
             """
             self.backend_1 = backend_1
             self.backend_2 = backend_2
-            self.add_name_triples = add_name_triples
-            self.two_backend_query_processor = \
-                    TwoBackendQueryProcessor(backend_1, backend_2)
+            self.two_backend_query_processor = TwoBackendQueryProcessor(
+                    backend_1, backend_2, add_name_triples)
             super(RequestHandler, self).__init__(*args, **kwargs)
     
         def log_message(self, format_string, *args):
@@ -532,7 +582,7 @@ if __name__ == "__main__":
             help="Run proxy on this port")
     parser.add_argument(
             "--add-name-triples", dest="add_name_triples",
-            type=bool, default=True,
+            action="store_true", default=False,
             help="Automatically add name meaningful triples"
             " (for each variable, where a triple like rdfs:label"
             " does not yet exist, but would lead to a result)")
@@ -557,6 +607,13 @@ if __name__ == "__main__":
     # Create backends. The third argument is the id (1 = primary, 2 = fallback)
     backend_1 = Backend(args.backend_1, args.timeout_1, 1)
     backend_2 = Backend(args.backend_2, args.timeout_2, 2)
+
+    # Communicate wheter Qlever Name Service is active or not.
+    if args.add_name_triples:
+       log.info("\x1b[1mQLever Name Service is ACTIVE\x1b[0m")
+    else:
+       log.info("\x1b[1mQLever Name Service is not active\x1b[0m"
+                " -> to activate, run with option --add-name-triples")
 
     # Listen and respond to queries at that port, no matter to which hostname on
     # this machine the were directed.
