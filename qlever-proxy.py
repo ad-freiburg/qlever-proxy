@@ -27,6 +27,197 @@ handler.setFormatter(logging.Formatter(
 log.addHandler(handler)
    
 
+class SPARQLQueryExtender:
+    """
+    Class for extending a SPARQL Query by adding name triples.
+    """
+
+    def __init__(self, backend=None):
+        """
+        Create object with given query processor. Needed to find out for which
+        variables in a query, a name triple makes sense (we launch a suitable 
+        SPARQL query for that).
+
+        TODO: for now, hard-code the backend. This should eventually be passed
+        to the constructor.
+        """
+        self.timeout_seconds = 10
+        self.backend = backend if backend != None else Backend(
+                "qlever.cs.uni-freiburg.de", 443,
+                "/api/wikidata", self.timeout_seconds, 1)
+    
+    def get_query_parts(self, sparql_query):
+        """
+        Split a SPARQL query into parts. Returns the variables from the SELECT
+        clause, the query without the final part (after the last closing curly
+        brace), and the final part. Note that for the test, it's not important
+        that the SPARQL query is syntactically correct.
+
+        >>> log.setLevel(logging.ERROR)
+        >>> sqe = SPARQLQueryExtender()
+        >>> sqe.get_query_parts(" PREFIX a: <bla>  PREFIX bc: <http://y> "
+        ...                     "SELECT ?x_  ( COUNT( ?y_2) AS ?yy)  WHERE "
+        ...                     "{ ?x wd:P31 ?p31 { SELECT ... WHERE ... } ?p31 w:P279 ?y } "
+        ...                     "O 20 L 10") # doctest: +NORMALIZE_WHITESPACE
+        [['PREFIX a: <bla>', 'PREFIX bc: <http://y>'],
+         '?x_  ( COUNT( ?y_2) AS ?yy)',
+         ['?x_', '?yy'],
+         '?x wd:P31 ?p31 { SELECT ... WHERE ... } ?p31 w:P279 ?y',
+         'O 20 L 10']
+        """
+        # Get the query parts via this nice regex.
+        match_groups = re.match(
+            "^\s*(.*?)\s*SELECT\s+(\S[^{]*\S)\s*WHERE\s*\{\s*(\S.*\S)\s*}\s*(.*?)\s*$",
+            sparql_query)
+        try:
+            prefixes_list = re.split("\s+(?=PREFIX)", match_groups.group(1))
+            select_vars_string = match_groups.group(2)
+            select_vars_list = re.sub(
+                "\(\s*[^(]+\s*\([^)]+\)\s*[aA][sS]\s*(\?[^)]+)\s*\)", "\\1",
+                select_vars_string).split()
+            body_string = match_groups.group(3)
+            footer_string = match_groups.group(4)
+            return [prefixes_list, select_vars_string, select_vars_list,
+                    body_string, footer_string]
+        except:
+            log.error("Problem parsing SPARQL query (%s)", str(e))
+            return None
+
+    def make_name_query_from_parts(self,
+            prefixes_list, name_vars_list, name_triples_list,
+            select_vars_string, body_string, footer_string):
+        """
+        Build query from the given parts. It should be self-explanatory from the
+        return-statement, how the parts are synthesized. The arguments with
+        suffix _list are lists, the other arguments are strings.
+        """
+        prefixes_string = "\n".join(prefixes_list)
+        name_vars_string = " ".join(name_vars_list)
+        name_triples_string = "\n".join(name_triples_list)
+        return f"{prefixes_string}\n" \
+               f"SELECT {name_vars_string} WHERE {{\n" \
+               f"  {{ SELECT {select_vars_string} WHERE {{\n" \
+               f"    {body_string} }} }}\n" \
+               f"{name_triples_string}\n" \
+               f"}} {footer_string}"
+
+
+    def query_enhanced_by_names(self, sparql_query, name_predicate,
+                               name_predicate_prefix, var_suffix, backend):
+        """
+        Enhance the query, so that in the result for each columns with an ID
+        that also has a name (via name_predicate) there is also a column (right
+        next to the id column) with that name.
+
+        >>> log.setLevel(logging.ERROR)
+        >>> sqe = SPARQLQueryExtender()
+        >>> backend = Backend("qlever.cs.uni-freiburg.de", 443,
+        ...                      "/api/wikidata", 1, 0)
+        >>> sparql_lines = sqe.query_enhanced_by_names(
+        ...     "PREFIX wdt: <http://www.wikidata.org/prop/direct/> "
+        ...     "PREFIX wd: <http://www.wikidata.org/entity/>  "
+        ...     "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>"
+        ...     "SELECT ?x ?y ?y_label WHERE {"
+        ...     "  ?x wdt:P31 wd:Q5 ."
+        ...     "  ?x wdt:P17 ?y ."
+        ...     "  ?y rdfs:label ?y_label"
+        ...     "} LIMIT 10 ",
+        ...     "@en@rdfs:label",
+        ...     "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>",
+        ...     "_name",
+        ...     backend).split("\\n")
+        >>> len(sparql_lines)
+        8
+        >>> sparql_lines[:3] # doctest: +NORMALIZE_WHITESPACE
+        ['PREFIX wdt: <http://www.wikidata.org/prop/direct/>',
+         'PREFIX wd: <http://www.wikidata.org/entity/>',
+         'PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>']
+        >>> sparql_lines[3]
+        'SELECT ?x ?x_name ?y ?y_label WHERE {'
+        >>> sparql_lines[4]
+        '  { SELECT ?x ?y ?y_label WHERE {'
+        >>> sparql_lines[5]
+        '    ?x wdt:P31 wd:Q5 . ?x wdt:P17 ?y . ?y rdfs:label ?y_label } }'
+        >>> sparql_lines[6]
+        '  ?x @en@rdfs:label ?x_name'
+        >>> sparql_lines[7]
+        '} LIMIT 10'
+        """
+
+        # Get the various parts of the query (some as lists, some as strings).
+        prefixes_list, select_vars_string, select_vars_list, \
+                body_string, footer_string = self.get_query_parts(sparql_query)
+        body_string = re.sub("\s+", " ", body_string)
+        # Add name_predicate_prefix if not already in list of prefixes
+        #
+        # TODO: The following is not correct in case the prefix is already in
+        # the list, but with a different definition. The result will be that no
+        # result will be found for any of the name probe queries below and no
+        # name triples will be added to the query.
+        if not name_predicate_prefix in prefixes_list:
+            prefixes_list.add(name_predicate_prefix)
+
+        # Iterate over all variables from the SELECT clause of the original
+        # query and check two things:
+        #
+        # 1. Do they already have a "name triple" in the original query?
+        #
+        # 2. If not, check via a SPARQL query whether adding a name triple gives
+        #    any results.
+        # 
+        # TODO: I first tried to check property 2 with a single SPARQL query
+        # with all variables where property 1 holds at once, using OPTIONAL.
+        # But that did not work, some fields were empty also for variables which
+        # clearly had names. This even happened when I added only a single name
+        # triple with OPTIONAL. Looks like a QLever bug to me.
+        #
+        enhanced_select_vars_list = select_vars_list.copy()
+        name_triples_list = []
+        num_name_vars_added = 0
+        for i, var in enumerate(select_vars_list):
+            # First check property 1. The regex captures which predicates we
+            # count as name predicates when checking whether a "name triple"
+            # already exists. Feel free to extend this.
+            name_predicate_regex = "(@[a-z]+@)?(rdfs:label|schema:name)"
+            if re.search(re.sub("\?", "\\?", var) + "\\s+"
+                + name_predicate_regex, body_string) != None:
+                continue
+
+            # Now check property 2 via a SPARQL query (does it make sense to add
+            # a name triple for this variable).
+            name_var_test = var + var_suffix
+            name_triple_test = f"  {var} {name_predicate} {name_var_test}"
+            name_test_query= self.make_name_query_from_parts(
+                prefixes_list, [name_var_test], [name_triple_test],
+                select_vars_string, body_string, "LIMIT 1")
+            try:
+                response = self.backend.query("/?query=" +
+                    urllib.parse.quote(name_test_query), self.timeout_seconds)
+                match = re.search("\"resultsize\"\s*:\s*(\d+)",
+                    response.data.decode("utf-8"))
+                add_name_for_this_var = int(match.group(1)) > 0
+            except Exception as e:
+                log.error("\x1b[31mDid not get or could not parse result from"
+                          "backend\x1b[0m")
+                log.error("Error message: %s" % str(e))
+                log.error("Query was: %s" % name_test_query)
+                add_name_for_this_var = False
+
+            # If both properties fulfilled, add the variable to the select
+            # variables (at the right position) and add the name triple.
+            if add_name_for_this_var:
+                num_name_vars_added += 1
+                enhanced_select_vars_list.insert(
+                        i + num_name_vars_added, name_var_test)
+                name_triples_list.append(name_triple_test)
+
+        # Add the name triples for the variables, where names exist.
+        enhanced_query = self.make_name_query_from_parts(
+                prefixes_list, enhanced_select_vars_list, name_triples_list,
+                select_vars_string, body_string, footer_string)
+        return enhanced_query
+
+
 class Backend:
     """
     Class for asking queries to one or several of the QLever backend.
@@ -63,15 +254,22 @@ class Backend:
         log.info("Backend %d: %s:%d%s with timeout %.1fs",
              backend_id, host, port, base_path, timeout_seconds)
 
-    def query(self, query_path, queue, timeout):
+    def query_and_write_to_queue(self, query_path, timeout, queue):
+        """ 
+        Like method query below, but append response to given queue (along with
+        the backend id, so that we know which result comes from with backend).
+        
+        Note that queue.put automatically locks the queue during appending so
+        that appends from different threads are serialized and don't interfere
+        with each other.
+        """
+        response = self.query(query_path, timeout)
+        queue.put((response, self.backend_id))
+
+    def query(self, query_path, timeout):
         """ 
         Sent a GET request to the QLever backend, with the given path (which
         should always start with a / even if it's a relative path).
-
-        Append the result to the given queue along with the backend id (so that
-        we know which result comes from with backend). Note that queue.put
-        automatically locks the queue during appending so that appends from
-        different threads are serialized and don't interfere with each other.
         """
 
         log_prefix = "Backend %d:" % self.backend_id
@@ -89,27 +287,28 @@ class Backend:
                               else str(response.data)[:47] + "...")
             # log.debug("Content type  : %s", response.getheader("Content-Type"))
             # log.debug("All headers   : %s", response.getheaders())
-            queue.put((response, self.backend_id))
+            return response
         except socket.timeout as e:
-            log.info("%s Timeout (socket.timeout) after %d seconds",
+            log.info("%s Timeout (socket.timeout) after %.1f seconds",
                       log_prefix, self.timeout_seconds)
-            queue.put((None, self.backend_id))
+            return None
         except urllib3.exceptions.ReadTimeoutError as e:
-            log.info("%s Timeout (ReadTimeoutError) after %d seconds",
+            log.info("%s Timeout (ReadTimeoutError) after %.1f seconds",
                       log_prefix, self.timeout_seconds)
-            queue.put((None, self.backend_id))
+            return None
         except urllib3.exceptions.MaxRetryError as e:
-            log.info("%s Timeout (MaxRetryError) after %d seconds",
+            log.info("%s Timeout (MaxRetryError) after %.1f seconds",
                       log_prefix, self.timeout_seconds)
-            queue.put((None, self.backend_id))
+            return None
         except Exception as e:
             log.error("%s Error with request to %s (%s)",
                       log_prefix, self.host, str(e))
             # log.error("%s Headers: %s", log_prefix, response.headers)
             # log.error("%s Data: %s", log_prefix, response.data)
-            queue.put((None, self.backend_id))
+            return None
 
 class QueryProcessor:
+
     """
     Class for sending a query to one or both backends, each with a timeout.
 
@@ -124,7 +323,7 @@ class QueryProcessor:
         """
         # The first backend ("primary") has a timeout of 2 seconds.
         self.timeout_single_query = 10.0
-        self.timeout_backend_1 = 1.0
+        self.timeout_backend_1 = 0.5
         self.timeout_backend_2 = 5.0
         self.backend_1 = Backend("qlever.cs.uni-freiburg.de", 443,
                                  "/api/wikidata",
@@ -134,15 +333,9 @@ class QueryProcessor:
                                  "/api/wikidata-vulcano",
                                  self.timeout_backend_2, 2)
 
-    def query_first_backend_only(self, path):
-        """
-        Query only the first backend. Used for commands like clearing the cache
-        (there is no point in also clearing the cache of the second backend).
-        """
-        result_queue = queue.Queue()
-        self.backend_1.query(path, result_queue, self.timeout_single_query)
-        response, backend_id = result_queue.get()
-        return response
+    def query_first_backend_only(self, path_1):
+        """ Query first backend. """
+        return self.backend_1.query(path_1, self.timeout_backend_1)
 
     def query_both_backends_in_parallel(self, path_1, path_2):
         """
@@ -153,10 +346,12 @@ class QueryProcessor:
         # Send two concurrent requests to the two backends. Each of them will
         # append their response object to the given queue.
         result_queue = queue.Queue()
-        thread_1 = threading.Thread(target=self.backend_1.query,
-                                    args=(path_1, result_queue, self.timeout_backend_1))
-        thread_2 = threading.Thread(target=self.backend_2.query,
-                                    args=(path_2, result_queue, self.timeout_backend_2))
+        thread_1 = threading.Thread(
+                target=self.backend_1.query_and_write_to_queue,
+                args=(path_1, self.timeout_backend_1, result_queue))
+        thread_2 = threading.Thread(
+                target=self.backend_2.query_and_write_to_queue,
+                args=(path_2, self.timeout_backend_2, result_queue))
         for thread in [thread_1, thread_2]:
             thread.daemon = True
             thread.start()
