@@ -284,6 +284,7 @@ class QleverNameService:
                     var_regex = re.sub("\\?", "\\?", var) + "\\b"
                     log.debug("Regex for re.sub is %s" % var_regex)
                     body_string = re.sub(var_regex, id_var, body_string)
+                    group_by_string = re.sub(var_regex, id_var, group_by_string)
                     select_vars_string = re.sub(var_regex, id_var,
                             select_vars_string)
                 else:
