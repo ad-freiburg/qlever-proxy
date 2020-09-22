@@ -31,13 +31,22 @@ log.addHandler(handler)
 
 class QleverNameService:
     """
-    Class for extending a SPARQL Query by adding name triples.
+    Class for extending a SPARQL Query by adding name variables and triples. We
+    use the following terminology:
+
+    An "id variable" is a variable which stands for entities which have a name
+    (via the given name predicate, e.g. @en@rdfs:label).
+
+    A "name variable" is a variable which stand for literals which are names of
+    a corresponding id variable.
+
+    A "name triple" is a triple of the form <is variable> <name predicate> <name
+    variable>.
     """
 
     def __init__(self, backend,
             name_predicate, name_predicate_prefix,
-            var_suffix_id,
-            var_suffix_name):
+            var_suffix_id, var_suffix_name, addition_mode):
         """
         Create with given backend. For the meaning of the other three arguments,
         see the doctest for enhance_query below.
@@ -47,7 +56,14 @@ class QleverNameService:
         self.name_predicate_prefix = name_predicate_prefix
         self.var_suffix_id = var_suffix_id
         self.var_suffix_name = var_suffix_name
-        self.addition_mode = "add_first_replace_others"
+        self.addition_mode = addition_mode
+
+        # Which of the two variable types (id and name) are we renaming?
+        #
+        # Note: if we do not rename id vars, we have to rename name vars, since
+        # we cannot have the same name for both.
+        self.rename_id_vars = var_suffix_id != ""
+        self.rename_name_vars = var_suffix_name != "" or var_suffix_id == ""
     
     def get_query_parts(self, sparql_query):
         """
@@ -57,7 +73,7 @@ class QleverNameService:
         that the SPARQL query is syntactically correct and no backend is needed.
 
         >>> log.setLevel(logging.ERROR)
-        >>> qns = QleverNameService(None, None, None, None, None)
+        >>> qns = QleverNameService(None, None, None, None, None, None)
         >>> parts = qns.get_query_parts(
         ...     " PREFIX a: <bla>  PREFIX bc: <http://y> \\n"
         ...     "SELECT ?x_  ( COUNT( ?y_2) AS ?yy)  WHERE \\n"
@@ -155,7 +171,7 @@ class QleverNameService:
         ...     backend,
         ...     "@en@rdfs:label",
         ...     "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>",
-        ...     "_id", "_name")
+        ...     "_id", "_name", "add-all")
         >>> sparql_lines = qns.enhance_query(
         ...     "PREFIX wdt: <http://www.wikidata.org/prop/direct/> "
         ...     "PREFIX wd: <http://www.wikidata.org/entity/>  "
@@ -165,22 +181,22 @@ class QleverNameService:
         ...     "  ?x wdt:P17 ?y ."
         ...     "  ?y rdfs:label ?y_label ."
         ...     "} LIMIT 10 ").split("\\n")
-        >>> len(sparql_lines)
-        8
         >>> sparql_lines[:3] # doctest: +NORMALIZE_WHITESPACE
         ['PREFIX wdt: <http://www.wikidata.org/prop/direct/>',
          'PREFIX wd: <http://www.wikidata.org/entity/>',
          'PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>']
         >>> sparql_lines[3]
-        'SELECT ?x ?x_name ?y ?y_label WHERE {'
+        'SELECT ?x_id ?x_name ?y ?y_label WHERE {'
         >>> sparql_lines[4]
-        '  { SELECT ?x ?y ?y_label WHERE {'
+        '  { SELECT ?x_id ?y ?y_label WHERE {'
         >>> sparql_lines[5]
-        '    ?x wdt:P31 wd:Q5 . ?x wdt:P17 ?y . ?y rdfs:label ?y_label } }'
+        '    ?x_id wdt:P31 wd:Q5 . ?x_id wdt:P17 ?y . ?y rdfs:label ?y_label } }'
         >>> sparql_lines[6]
-        '  ?x @en@rdfs:label ?x_name'
+        '  ?x_id @en@rdfs:label ?x_name'
         >>> sparql_lines[7]
         '} LIMIT 10'
+        >>> len(sparql_lines)
+        8
         """
 
         log.info("QLever Name Service: check which name triples can be added")
@@ -199,13 +215,13 @@ class QleverNameService:
         if not self.name_predicate_prefix in prefixes_list:
             prefixes_list.append(self.name_predicate_prefix)
 
-        # Iterate over all variables from the SELECT clause of the original
-        # query and check two things:
+        # For each variable in the SELECT clause of the original query check two
+        # things:
         #
-        # 1. Do they already have a "name triple" in the original query?
+        # 1. Does it already have a "name triple" in the original query?
         #
         # 2. If not, check via a SPARQL query whether adding a name triple gives
-        #    any results.
+        #    any results, that is whether it is an "id variable".
         # 
         # TODO: I first tried to check property 2 with a single SPARQL query
         # with all variables where property 1 holds at once, using OPTIONAL.
@@ -213,9 +229,9 @@ class QleverNameService:
         # clearly had names. This even happened when I added only a single name
         # triple with OPTIONAL. Looks like a QLever bug to me.
         #
-        enhanced_select_vars_list = select_vars_list.copy()
+        new_select_vars_list = select_vars_list.copy()
         name_triples_list = []
-        num_name_vars_added = 0
+        num_added = 0
         for i, var in enumerate(select_vars_list):
             # First check property 1. The regex captures which predicates we
             # count as name predicates when checking whether a "name triple"
@@ -227,7 +243,7 @@ class QleverNameService:
 
             # Now check property 2 via a SPARQL query (does it make sense to add
             # a name triple for this variable).
-            name_var_test = var + self.var_suffix_name
+            name_var_test = var + "_test"
             name_triple_test = f"  {var} {self.name_predicate} {name_var_test}"
             name_test_query= self.make_name_query_from_parts(
                 prefixes_list, [name_var_test], [name_triple_test],
@@ -252,28 +268,54 @@ class QleverNameService:
                                              and len(match.groups()) > 0 \
                                              and int(match.group(1)) > 0 \
                                         else False
+            else:
+                add_name_for_this_var = False
 
             # If both properties fulfilled, add the variable to the select
             # variables (at the right position) and add the name triple.
             if add_name_for_this_var:
-                log.info("Adding triple \"%s\""
-                        % re.sub("^\s+", "", name_triple_test))
-                name_triples_list.append(name_triple_test)
-                # MODE 1: Retain original variable and add name variable
-                if self.addition_mode == "add_name_variable" or \
-                        num_name_vars_added == 0:
-                    num_name_vars_added += 1
-                    enhanced_select_vars_list.insert(
-                            i + num_name_vars_added, name_var_test)
-                # MODE 2: Add name for first variable, replace others
+                # Are we renaming id variables?
+                if self.rename_id_vars:
+                    id_var = var + self.var_suffix_id
+                    log.info(f"Renaming {var} to {id_var}")
+                    new_select_vars_list[i + num_added] = id_var
+                    # Replace all occurrences of this variable (the \\b is there
+                    # to make sure that only whole-word matches are replaced).
+                    var_regex = re.sub("\\?", "\\?", var) + "\\b"
+                    log.debug("Regex for re.sub is %s" % var_regex)
+                    body_string = re.sub(var_regex, id_var, body_string)
+                    select_vars_string = re.sub(var_regex, id_var,
+                            select_vars_string)
                 else:
-                    enhanced_select_vars_list[i + num_name_vars_added] \
-                            = name_var_test
+                    id_var = var
+                # Are we renaming name variables?
+                if self.rename_name_vars:
+                    name_var = var + self.var_suffix_name
+                else:
+                    name_var = var
+                # One of the two must be renamed
+                assert(id_var != name_var)
+                # Add new triple
+                name_triple = f"  {id_var} {self.name_predicate} {name_var}"
+                log.info("Adding triple \"%s\""
+                        % re.sub("^\s+", "", name_triple))
+                name_triples_list.append(name_triple)
+                # CASE 1: Keep the id variable, add the name variable
+                if self.addition_mode == "add-all" or \
+                        (self.addition_mode == "add-first" and num_added == 0):
+                    log.info("Adding name variable \"%s\"" % name_var)
+                    num_added += 1
+                    new_select_vars_list.insert(i + num_added, name_var)
+                # CASE 2: Replace the id variable by the name variable
+                else:
+                    log.info("Replacing id variable \"%s\" "
+                             "by name variable \"%s\"" % (id_var, name_var))
+                    new_select_vars_list[i + num_added] = name_var
 
 
         # Add the name triples for the variables, where names exist.
         enhanced_query = self.make_name_query_from_parts(
-                prefixes_list, enhanced_select_vars_list, name_triples_list,
+                prefixes_list, new_select_vars_list, name_triples_list,
                 select_vars_string, body_string, group_by_string, footer_string)
         end_time = time.time()
         log.info("Total time spent on name service: %dms",
@@ -412,7 +454,8 @@ class QueryProcessor:
     fallback). In the worst case, both backends fail.
     """
 
-    def __init__(self, backend_1, backend_2, timeout_normal, add_name_triples):
+    def __init__(self,
+            backend_1, backend_2, timeout_normal, qlever_name_service):
         """
         Create the two backends using the class above. Also create a
         QleverNameService in case we need it (costs nothing to create, just
@@ -421,12 +464,7 @@ class QueryProcessor:
         self.backend_1 = backend_1
         self.backend_2 = backend_2
         self.timeout_normal = timeout_normal
-        self.add_name_triples = add_name_triples
-        self.qlever_name_service = QleverNameService(
-                backend_2,
-                "@en@rdfs:label",
-                "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>",
-                "_id", "_name")
+        self.qlever_name_service = qlever_name_service
 
     def query(self, path):
         """
@@ -465,10 +503,10 @@ class QueryProcessor:
         # CASE 2: An ordinary query, which we send to backend 1. This can be a
         # SPARQL query or a command like /?cmd=stats or /?cmd=clearcache
         else:
-            # If SPARQL query and add_name_triples, see if we can add name
-            # triples to the query. Note: there can be more &. arguments in the
-            # end
-            if path.startswith("/?query=") and self.add_name_triples:
+            # If SPARQL query and QLever Name Service active, see if we can add
+            # name triples to the query. Note: there can be more & arguments in
+            # the end
+            if path.startswith("/?query=") and self.qlever_name_service:
                 # Note that parse_qsl creates a list of key-value pairs and also
                 # automatically unquotes (and urlencode quotes again).
                 parameters = urllib.parse.parse_qsl(path[2:])
@@ -532,7 +570,8 @@ class QueryProcessor:
         return response
 
 
-def MakeRequestHandler(backend_1, backend_2, timeout_normal, add_name_triples):
+def MakeRequestHandler(
+        backend_1, backend_2, timeout_normal, qlever_name_service):
     """
     Returns a RequestHandler class for handling GET requests to the proxy for
     using the given backends.
@@ -558,7 +597,7 @@ def MakeRequestHandler(backend_1, backend_2, timeout_normal, add_name_triples):
             self.backend_1 = backend_1
             self.backend_2 = backend_2
             self.query_processor = QueryProcessor(
-                    backend_1, backend_2, timeout_normal, add_name_triples)
+                    backend_1, backend_2, timeout_normal, qlever_name_service)
             super(RequestHandler, self).__init__(*args, **kwargs)
     
         def log_message(self, format_string, *args):
@@ -621,8 +660,8 @@ def MakeRequestHandler(backend_1, backend_2, timeout_normal, add_name_triples):
     return RequestHandler
 
 
-def server_loop(hostname, port, backend_1, backend_2,
-        timeout_normal, add_name_triples):
+def server_loop(hostname, port,
+        backend_1, backend_2, timeout_normal, qlever_name_service):
     """
     Create a HTTP server that listens and respond to queries for the given
     hostname under the given port, using the request handler above. Runs in an
@@ -631,7 +670,7 @@ def server_loop(hostname, port, backend_1, backend_2,
 
     server_address = (hostname, port)
     request_handler_class = MakeRequestHandler(
-            backend_1, backend_2, timeout_normal, add_name_triples)
+            backend_1, backend_2, timeout_normal, qlever_name_service)
     server = http.server.HTTPServer(server_address, request_handler_class)
     log.info("Listening to GET requests on %s:%d" % (hostname, port))
     server.serve_forever()
@@ -646,12 +685,6 @@ if __name__ == "__main__":
     parser.add_argument(
             "--port", dest="port", type=int, default=8904,
             help="Run proxy on this port")
-    parser.add_argument(
-            "--add-name-triples", dest="add_name_triples",
-            action="store_true", default=False,
-            help="Automatically add name meaningful triples"
-            " (for each variable, where a triple like rdfs:label"
-            " does not yet exist, but would lead to a result)")
     parser.add_argument(
             "--backend-1", dest="backend_1", type=str,
             default="https://qlever.cs.uni-freiburg.de:443/api/wikidata",
@@ -670,6 +703,21 @@ if __name__ == "__main__":
     parser.add_argument(
             "--timeout", dest="timeout_normal", type=float, default=10.0,
             help="Timeout for Backend 1, when asking ordinary queries")
+    parser.add_argument(
+            "--add-name-triples", dest="add_name_triples", type=str,
+            default="add_first",
+            help="Add name triples for id variables. Options are:\n"
+            " add-all     : have both name vars and id vars\n"
+            " replace-all : replace all id vars by name vars\n"
+            " add-first   : add name var for first id var, replace others\n"
+            " [other]     : do not add name triples at all\n")
+    parser.add_argument(
+            "--id-suffix", dest="id_suffix", type=str, default="_id",
+            help="Suffix for id variables (can be empty)")
+    parser.add_argument(
+            "--name-suffix", dest="name_suffix", type=str, default="_name",
+            help="Suffix for name variables (can be empty)")
+
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -679,14 +727,25 @@ if __name__ == "__main__":
     log.info("Timeout for single-backend queries is %.1fs" %
             args.timeout_normal)
 
-    # Communicate wheter Qlever Name Service is active or not.
-    if args.add_name_triples:
-       log.info("\x1b[1mQLever Name Service is ACTIVE\x1b[0m")
+    # Create Qlever Name Service (None if not asked for).
+    if args.add_name_triples in ["add-all", "replace-all", "add-first"]:
+        if args.id_suffix == args.name_suffix and \
+                args.add_name_triples in ["add-all", "add-first"]:
+                    log.error("If we add name triples, the id suffix "
+                              "and the name suffix must be different")
+                    sys.exit(1)
+        qlever_name_service = QleverNameService(
+                backend_2,
+                "@en@rdfs:label",
+                "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>",
+                args.id_suffix, args.name_suffix, args.add_name_triples)
+        log.info("\x1b[1mQLever Name Service is ACTIVE\x1b[0m")
     else:
-       log.info("\x1b[1mQLever Name Service is not active\x1b[0m"
-                " -> to activate, run with option --add-name-triples")
+        qlever_name_service = None
+        log.info("\x1b[1mQLever Name Service is not active\x1b[0m"
+                 " -> see usage info (--help) for how to activate")
 
     # Listen and respond to queries at that port, no matter to which hostname on
     # this machine the were directed.
-    server_loop("0.0.0.0", args.port, backend_1, backend_2,
-            args.timeout_normal, args.add_name_triples)
+    server_loop("0.0.0.0", args.port,
+            backend_1, backend_2, args.timeout_normal, qlever_name_service)
