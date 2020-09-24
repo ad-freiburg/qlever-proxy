@@ -20,13 +20,31 @@ import yaml
 import json
 
 
-""" Global log """
+# Global log.
 log = logging.getLogger("proxy logger")
 log.setLevel(logging.INFO)
 handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter(
     "%(asctime)s.%(msecs)03d %(levelname)s  %(message)s", "%Y-%m-%d %H:%M:%S"))
 log.addHandler(handler)
+
+# Function for abbreviating long strings in log. When called with second
+# argument unquote=True, urldecode the string and replace sequences of whitspace
+# by a single space. When called with compact_ws=True, only do the latter.
+# space.
+def abbrev(long_string, **kwargs):
+    max_length = 80
+    long_string = "\"" + long_string + "\""
+    if kwargs.get("unquote", False):
+        long_string = re.sub("\n", " ",
+                urllib.parse.unquote_plus(long_string)) + " [unquoted]"
+    if kwargs.get("compact_ws", False):
+        long_string = re.sub("\s+", " ", long_string)
+    if len(long_string) <= max_length:
+        return long_string
+    else:
+        k = max_length // 2 - 2
+        return "%s ... %s" % (long_string[:k], long_string[-k:])
    
 
 class QleverNameService:
@@ -97,64 +115,67 @@ class QleverNameService:
         match_groups = re.match(
             "^\s*(.*?)\s*SELECT\s+(\S[^{]*\S)\s*WHERE\s*{\s*(\S.*\S)\s*}\s*(.*?)\s*$",
             re.sub("\s+", " ", sparql_query))
-        try:
-            prefixes_list = re.split("\s+(?=PREFIX)", match_groups.group(1))
-            select_vars_string = match_groups.group(2)
-            select_vars_string = re.sub("\(\s+", "(", select_vars_string)
-            select_vars_string = re.sub("\s+\)", ")", select_vars_string)
-            # For something like "( COUNT( ?y_2) AS ?yy)" extract "?yy".
-            select_vars_list = re.sub(
-                "\(\s*[^(]+\s*\([^)]+\)\s*[aA][sS]\s*(\?[^)]+)\s*\)", "\\1",
-                select_vars_string).split()
-            body_string = match_groups.group(3)
-            body_string = re.sub("\s+", " ", body_string)
-            body_string = re.sub("\s*\.?\s*$", "", body_string)
-            footer_string = match_groups.group(4)
-
-            # If there is a GROUP BY, we need to separate it from the footer.
-            #
-            # First split by whitespace, then check whether the first two tokens
-            # are GROUP BY and if yes, collect all variables (?...) that follow.
-            # This is kind of ugly, but it works. It would be nicer to do this
-            # with a proper regex. On the other hand, maybe that's not to
-            # differnt from how a "real" parser would do it.
-            footer_string_parts = footer_string.split()
-            if len(footer_string_parts) > 2 \
-                    and footer_string_parts[0] == "GROUP" \
-                    and footer_string_parts[1] == "BY":
-                group_by_string = "GROUP BY"
-                i = 2
-                while i < len(footer_string_parts) \
-                        and footer_string_parts[i].startswith("?"):
-                    i += 1
-                group_by_string = " ".join(footer_string_parts[:i]) + " "
-                footer_string = " ".join(footer_string_parts[i:])
+        if match_groups == None or len(match_groups.groups()) != 4:
+            log.error("\x1b[31mProblem parsing SPARQL query\x1b[0m"
+                      "\x1b[90m\n%s\x1b[0m" % re.sub("\s*$", "", sparql_query))
+            if match_groups == None:
+                log.error("Parse regex does not match")
             else:
-                group_by_string = ""
-            return [prefixes_list, select_vars_string, select_vars_list,
-                      body_string, group_by_string, footer_string]
-        except Exception as e:
-            log.error("\x1b[31mProblem parsing SPARQL query (%s)\x1b[0m" % str(e))
-            log.error("SPARQL query:\n%s" % sparql_query)
-            log.error("Match groups: %s" % str(match_groups.groups()))
+                log.error("Parse regex match groups: %s" % str(match_groups.groups()))
             return None
+        prefixes_list = re.split("\s+(?=PREFIX)", match_groups.group(1))
+        select_vars_string = match_groups.group(2)
+        select_vars_string = re.sub("\(\s+", "(", select_vars_string)
+        select_vars_string = re.sub("\s+\)", ")", select_vars_string)
+        # For something like "( COUNT( ?y_2) AS ?yy)" extract "?yy".
+        select_vars_list = re.sub(
+            "\(\s*[^(]+\s*\([^)]+\)\s*[aA][sS]\s*(\?[^)]+)\s*\)", "\\1",
+            select_vars_string).split()
+        body_string = match_groups.group(3)
+        body_string = re.sub("\s+", " ", body_string)
+        body_string = re.sub("\s*\.?\s*$", "", body_string)
+        footer_string = match_groups.group(4)
 
-    def make_name_query_from_parts(self,
-            prefixes_list, name_vars_list, name_triples_list,
+        # If there is a GROUP BY, we need to separate it from the footer.
+        #
+        # First split by whitespace, then check whether the first two tokens
+        # are GROUP BY and if yes, collect all variables (?...) that follow.
+        # This is kind of ugly, but it works. It would be nicer to do this
+        # with a proper regex. On the other hand, maybe that's not to
+        # differnt from how a "real" parser would do it.
+        footer_string_parts = footer_string.split()
+        if len(footer_string_parts) > 2 \
+                and footer_string_parts[0] == "GROUP" \
+                and footer_string_parts[1] == "BY":
+            group_by_string = "GROUP BY"
+            i = 2
+            while i < len(footer_string_parts) \
+                    and footer_string_parts[i].startswith("?"):
+                i += 1
+            group_by_string = " ".join(footer_string_parts[:i]) + " "
+            footer_string = " ".join(footer_string_parts[i:])
+        else:
+            group_by_string = ""
+        return [prefixes_list, select_vars_string, select_vars_list,
+                  body_string, group_by_string, footer_string]
+
+
+    def make_sparql_query_from_parts(self,
+            prefixes_list,new_vars_list, new_triples_list,
             select_vars_string, body_string, group_by_string, footer_string):
         """
-        Build query from the given parts. It should be self-explanatory from the
-        return-statement, how the parts are synthesized. The arguments with
-        suffix _list are lists, the other arguments are strings.
+        Build SPARQL query from the given parts. It should be self-explanatory
+        from the return-statement, how the parts are synthesized. The arguments
+        with suffix _list are lists, the other arguments are strings.
         """
         prefixes_string = "\n".join(prefixes_list)
-        name_vars_string = " ".join(name_vars_list)
-        name_triples_string = " .\n".join(name_triples_list)
+        new_vars_string = " ".join(new_vars_list)
+        new_triples_string = " .\n".join(new_triples_list)
         return f"{prefixes_string}\n" \
-               f"SELECT {name_vars_string} WHERE {{\n" \
+               f"SELECT {new_vars_string} WHERE {{\n" \
                f"  {{ SELECT {select_vars_string} WHERE {{\n" \
                f"    {body_string} }} {group_by_string}}}\n" \
-               f"{name_triples_string}\n" \
+               f"{new_triples_string}\n" \
                f"}} {footer_string}"
 
 
@@ -203,17 +224,12 @@ class QleverNameService:
         start_time = time.time()
 
         # Get the various parts of the query (some as lists, some as strings).
+        query_parts = self.get_query_parts(sparql_query)
+        if query_parts == None:
+            log.error("QLever name service: query unchanged")
+            return sparql_query
         prefixes_list, select_vars_string, select_vars_list, body_string, \
-                group_by_string, footer_string = self.get_query_parts(sparql_query)
-
-        # Add name_predicate_prefix if not already in list of prefixes
-        #
-        # TODO: The following is not correct in case the prefix is already in
-        # the list, but with a different definition. The result will be that no
-        # result will be found for any of the name probe queries below and no
-        # name triples will be added to the query.
-        if not self.name_predicate_prefix in prefixes_list:
-            prefixes_list.append(self.name_predicate_prefix)
+                group_by_string, footer_string = query_parts
 
         # For each variable in the SELECT clause of the original query check two
         # things:
@@ -230,93 +246,177 @@ class QleverNameService:
         # triple with OPTIONAL. Looks like a QLever bug to me.
         #
         new_select_vars_list = select_vars_list.copy()
-        name_triples_list = []
-        num_added = 0
+        new_triples_list = []
+        num_vars_added = 0
         for i, var in enumerate(select_vars_list):
-            # First check property 1. The regex captures which predicates we
-            # count as name predicates when checking whether a "name triple"
-            # already exists. Feel free to extend this.
-            name_predicate_regex = "(@[a-z]+@)?(rdfs:label|schema:name)"
-            if re.search(re.sub("\?", "\\?", var) + "\\s+"
-                + name_predicate_regex, body_string) != None:
-                continue
+            # For each check and replace, we have three components:
+            # 1. The regex to check whether the triple is already there
+            # 2. The new predicate
+            # 3. The prefix of the new predicate
+            # 4. The suffix of the new variable
+            # 5. Position of new variable (0 = replace, 1 = add to the right, -1
+            # = at the end, -2 = one before that, etc.)
+            # 6. Optional (True if yes)
+            new_triple_configs = []
+            # Try to add name triple?
+            if self.addition_mode:
+                new_triple_configs.append([
+                    "(@[a-z]+@)?(rdfs:label|schema:name)",
+                    self.name_predicate,
+                    "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>",
+                    self.var_suffix_name,
+                    1 if self.addition_mode == "add-all" or \
+                        (self.addition_mode == "add-first" and 
+                            num_vars_added == 0) else 0,
+                    False])
+            # Try to add image triple?
+            if i == 0:
+                new_triple_configs.append([
+                    "wdt:P18",
+                    "wdt:P18",
+                    "PREFIX wdt: <http://www.wikidata.org/prop/direct/>",
+                    "_image",
+                    -1,
+                    True])
+            # Try to add coordinates triple?
+            if i == len(select_vars_list) - 1:
+                new_triple_configs.append([
+                    "wdt:P625",
+                    "wdt:P625",
+                    "PREFIX wdt: <http://www.wikidata.org/prop/direct/>",
+                    "_coords",
+                    -1,
+                    True])
 
-            # Now check property 2 via a SPARQL query (does it make sense to add
-            # a name triple for this variable).
-            name_var_test = var + "_test"
-            name_triple_test = f"  {var} {self.name_predicate} {name_var_test}"
-            name_test_query= self.make_name_query_from_parts(
-                prefixes_list, [name_var_test], [name_triple_test],
-                select_vars_string, body_string, group_by_string, "LIMIT 1")
-            # SPARQL query in a separate try block, so that we can give a
-            # specific error message for that.
-            response = None
-            try:
-                response = self.backend.query("/?query=" +
-                    urllib.parse.quote(name_test_query),
-                    self.backend.timeout_seconds)
-            except Exception as e:
-                log.error("\x1b[31mCould not get result from backend\x1b[0m")
-                log.error("Error message: %s" % str(e))
-                log.error("Query was: %s" % name_test_query)
-                add_name_for_this_var = False
-            # If proper response, check the result size.
-            if response != None and response.http_response != None:
-                match = re.search("\"resultsize\"\s*:\s*(\d+)",
-                    response.http_response.data.decode("utf-8"))
-                add_name_for_this_var = True if match != None \
-                                             and len(match.groups()) > 0 \
-                                             and int(match.group(1)) > 0 \
-                                        else False
-            else:
-                add_name_for_this_var = False
+            # Keep track of whether this variable has been renamed (renamed at
+            # most once) and the original name.
+            var_has_been_renamed = False
+            original_var = var
 
-            # If both properties fulfilled, add the variable to the select
-            # variables (at the right position) and add the name triple.
-            if add_name_for_this_var:
-                # Are we renaming id variables?
-                if self.rename_id_vars:
-                    id_var = var + self.var_suffix_id
-                    log.info(f"Renaming {var} to {id_var}")
-                    new_select_vars_list[i + num_added] = id_var
-                    # Replace all occurrences of this variable (the \\b is there
-                    # to make sure that only whole-word matches are replaced).
-                    var_regex = re.sub("\\?", "\\?", var) + "\\b"
-                    log.debug("Regex for re.sub is %s" % var_regex)
-                    body_string = re.sub(var_regex, id_var, body_string)
-                    group_by_string = re.sub(var_regex, id_var, group_by_string)
-                    select_vars_string = re.sub(var_regex, id_var,
-                            select_vars_string)
-                else:
-                    id_var = var
-                # Are we renaming name variables?
-                if self.rename_name_vars:
-                    name_var = var + self.var_suffix_name
-                else:
-                    name_var = var
-                # One of the two must be renamed
-                assert(id_var != name_var)
-                # Add new triple
-                name_triple = f"  {id_var} {self.name_predicate} {name_var}"
-                log.info("Adding triple \"%s\""
-                        % re.sub("^\s+", "", name_triple))
-                name_triples_list.append(name_triple)
-                # CASE 1: Keep the id variable, add the name variable
-                if self.addition_mode == "add-all" or \
-                        (self.addition_mode == "add-first" and num_added == 0):
-                    log.info("Adding name variable \"%s\"" % name_var)
-                    num_added += 1
-                    new_select_vars_list.insert(i + num_added, name_var)
-                # CASE 2: Replace the id variable by the name variable
-                else:
-                    log.info("Replacing id variable \"%s\" "
-                             "by name variable \"%s\"" % (id_var, name_var))
-                    new_select_vars_list[i + num_added] = name_var
+            for new_triple_exists_regex, \
+                new_predicate, \
+                new_predicate_prefix, \
+                new_var_suffix, \
+                new_var_position, \
+                new_triple_is_optional in new_triple_configs:
 
+                # Add name_predicate_prefix if not already in list of prefixes
+                #
+                # TODO: The following is not ideal for three reasons:
+                #
+                # 1. The running time is linear per added variable
+                # 2. The prefix ends up in the enhanced query also if the new triple
+                # is not added (because a related triple was already there)
+                # 3. In case the prefix is already in the list, but with a
+                # different definition. The result will be that no result will
+                # be found for any of the name probe queries below and no name
+                # triples will be added to the query.
+                if not new_predicate_prefix in prefixes_list:
+                    prefixes_list.append(new_predicate_prefix)
+
+                # First check property 1. The regex captures which predicates we
+                # count as name predicates when checking whether a "name triple"
+                # already exists. Feel free to extend this.
+                if re.search(re.sub("\?", "\\?", var) + "\\s+"
+                    + new_triple_exists_regex, body_string) != None:
+                    continue
+
+                # Now check property 2 via a SPARQL query (does it make sense to
+                # add a name triple for this variable). Make sure to take the
+                # current name of the variable (maybe it was renamed already).
+                test_var = var + new_var_suffix + "_test"
+                test_triple = f"  {var} {new_predicate} {test_var}"
+                test_query = self.make_sparql_query_from_parts(
+                    prefixes_list, [test_var], [test_triple],
+                    select_vars_string, body_string, group_by_string, "LIMIT 1")
+                log.debug(f"Test if adding \"{test_triple}\" gives result"
+                          f"\n\x1b[90m{test_query}\x1b[0m")
+                # SPARQL query in a separate try block, so that we can give a
+                # specific error message for that.
+                response = None
+                try:
+                    response = self.backend.query("/?query=" +
+                        urllib.parse.quote(test_query),
+                        self.backend.timeout_seconds)
+                except Exception as e:
+                    log.error("\x1b[31mCould not get result from backend\x1b[0m")
+                    log.error("Error message: %s" % str(e))
+                    log.error("Query was: %s" % test_query)
+                    add_new_triple = False
+                # If proper response, check the result size.
+                if response != None and response.http_response != None:
+                    # log.info(f"\x1b[90mResponse data for {var} is %s\x1b[0m"
+                    #         % re.sub("(\s|\\\\n)+", " ",
+                    #             str(response.http_response.data.decode("utf-8"))))
+                    match = re.search("\"resultsize\"\s*:\s*(\d+)",
+                        response.http_response.data.decode("utf-8"))
+                    add_new_triple = True if match != None \
+                                      and len(match.groups()) > 0 \
+                                      and int(match.group(1)) > 0 \
+                                 else False
+                else:
+                    add_new_triple = False
+
+                # If both properties are fulfilled, add the new triple.
+                if add_new_triple:
+                    # Are we renaming the original variable?
+                    # 
+                    # Note: id_var was initialized to None above to make sure
+                    # that in case we test several triples for addition, the
+                    # variable name is changed only once.
+                    if self.rename_id_vars \
+                            and not var_has_been_renamed \
+                            and self.var_suffix_id != "":
+                        var = original_var + self.var_suffix_id
+                        log.info(f"Renaming {original_var} to {var}")
+                        new_select_vars_list[i + num_vars_added] = var
+                        # Replace all occurrences of the original variable (the
+                        # \\b is there to make sure that only whole-word matches
+                        # are replaced).
+                        original_var_regex = re.sub("\\?", "\\?", original_var) + "\\b"
+                        log.debug("Regex for re.sub is %s" % original_var_regex)
+                        body_string = re.sub(original_var_regex, var, body_string)
+                        group_by_string = re.sub(original_var_regex, var, group_by_string)
+                        select_vars_string = re.sub(original_var_regex, var,
+                                select_vars_string)
+                        var_has_been_renamed = True
+                    # The name of the new variable.
+                    new_var = original_var + new_var_suffix
+                    # The id variable and the new variable must not have the
+                    # same name.
+                    assert(var != new_var)
+                    # Add new triple
+                    new_triple = f"{var} {new_predicate} {new_var}"
+                    if new_triple_is_optional:
+                        new_triple = f"OPTIONAL {{ {new_triple} }}"
+                    log.info("\x1b[0mAdding triple \"%s\"\x1b[0m"
+                            % re.sub("^\s+", "", new_triple))
+                    new_triples_list.append("  " + new_triple)
+                    # CASE 1: Replace the id variable by the name variable
+                    if new_var_position == 0:
+                        log.debug(f"Replacing id variable \"{var}\" "
+                                  f"by new variable \"{new_var}\"")
+                        new_select_vars_list[i + num_vars_added] = new_var
+                    # CASE 2: Keep the id variable, add the new variable. Do not
+                    # count variables appended to the end towards
+                    # num_vars_added.
+                    else:
+                        log.debug(f"Keeping id variable \"{var}\", "
+                                  f"adding new variable \"{new_var}\"")
+                        # Position +1 means right next to current position
+                        # Position -1 means last position, -2 second to last.
+                        if new_var_position > 0:
+                            num_vars_added += 1
+                            pos = i + num_vars_added + new_var_position - 1
+                        else:
+                            pos = len(new_select_vars_list) + new_var_position + 1
+                        new_select_vars_list.insert(pos, new_var)
+                    log.debug("\x1b[34mNew select var list: %s\x1b[0m" 
+                                % " ".join(new_select_vars_list))
 
         # Add the name triples for the variables, where names exist.
-        enhanced_query = self.make_name_query_from_parts(
-                prefixes_list, new_select_vars_list, name_triples_list,
+        enhanced_query = self.make_sparql_query_from_parts(
+                prefixes_list, new_select_vars_list, new_triples_list,
                 select_vars_string, body_string, group_by_string, footer_string)
         end_time = time.time()
         log.info("Total time spent on name service: %dms",
@@ -410,8 +510,8 @@ class Backend:
 
         log_prefix = "Backend %d:" % self.backend_id
         full_path = self.base_path + query_path
-        log.info("%s Sending GET request \"%s\"", log_prefix, full_path
-            if len(full_path) < 50 else full_path[:47] + "...")
+        log.debug("%s Sending GET request %s",
+                  log_prefix, abbrev(full_path, unquote=True))
 
         headers = urllib3.make_headers(keep_alive=False)  # , fields=params
         try:
@@ -419,8 +519,7 @@ class Backend:
                            'GET', full_path, headers=headers, timeout=timeout)
             assert(response.status == 200)
             log.debug("%s Response data from backend %d: %s", log_prefix,
-                response.data if len(response.data) < 50 \
-                              else str(response.data)[:47] + "...")
+                abbrev(str(response.data)))
             # log.debug("Content type  : %s", response.getheader("Content-Type"))
             # log.debug("All headers   : %s", response.getheaders())
             return Response(http_response=response)
@@ -489,10 +588,8 @@ class QueryProcessor:
                 log.debug("QUERIES = " + str(queries))
                 query_1 = queries["query_1"] + "\n" + queries["footer"]
                 query_2 = queries["query_2"] + "\n" + queries["footer"]
-                log.info("Query 1: " + re.sub("\s+", " ", query_1)[:30] \
-                           + "..." + re.sub("\s+", " ", query_1)[-30:])
-                log.info("Query 2: " + re.sub("\s+", " ", query_2)[:30] \
-                           + "..." + re.sub("\s+", " ", query_2)[-30:])
+                log.info("Query 1: " + abbrev(query_1, compact_ws=True))
+                log.info("Query 2: " + abbrev(query_2, compact_ws=True))
                 path_1 = "/?query=" + urllib.parse.quote(query_1)
                 path_2 = "/?query=" + urllib.parse.quote(query_2)
                 return self.query_backends_in_parallel(path_1, path_2)
@@ -500,7 +597,7 @@ class QueryProcessor:
                 error_msg = "\x1b[31mError parsing the YAML string (%s)\x1b[0m" % str(e)
                 log.info(error_msg)
                 log.info("YAML = \n" + queries_yaml)
-                return Response(query_path=y_path, error_msg=error_msg)
+                return Response(query_path=path, error_msg=error_msg)
         # CASE 2: An ordinary query, which we send to backend 1. This can be a
         # SPARQL query or a command like /?cmd=stats or /?cmd=clearcache
         else:
@@ -515,7 +612,7 @@ class QueryProcessor:
                 # log.info("SPARQL query before enhancing:\n%s" % sparql_query)
                 new_sparql_query = \
                         self.qlever_name_service.enhance_query(sparql_query)
-                log.info("Enhanced SPARQL query: %s"
+                log.info("QLever Name Service, result query: \x1b[90m%s\x1b[0m"
                         % re.sub("\s+", " ", new_sparql_query))
                 parameters[0] = ("query", new_sparql_query)
                 path = "/?" + urllib.parse.urlencode(parameters)
@@ -619,9 +716,10 @@ def MakeRequestHandler(
             # Process request.
             path = str(self.path)
             headers = re.sub("\n", " | ", str(self.headers))
+            path_unquoted = urllib.parse.unquote(path)
             log.info("")
-            log.info("Received GET request: %s"
-                        % (path if len(path) < 50 else path[:47] + "..."))
+            log.info("GET request received: %s"
+                    % abbrev(path_unquoted, unquote=True))
             log.debug("Headers: %s" % headers)
     
             # Process query. The query process will decided whether to ask both
@@ -681,7 +779,8 @@ if __name__ == "__main__":
 
     # Parse command line arguments + usage info.
     parser = argparse.ArgumentParser(
-            description="QLever Proxy, see the README.md for more information")
+            description="QLever Proxy, see the README.md for more information",
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument(
             "--port", dest="port", type=int, default=8904,
