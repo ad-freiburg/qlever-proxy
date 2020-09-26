@@ -46,7 +46,6 @@ def abbrev(long_string, **kwargs):
         k = max_length // 2 - 2
         return "%s ... %s" % (long_string[:k], long_string[-k:])
    
-
 class QleverNameService:
     """
     Class for extending a SPARQL Query by adding name variables and triples. We
@@ -62,26 +61,81 @@ class QleverNameService:
     variable>.
     """
 
-    def __init__(self, backend,
-            name_predicate, name_predicate_prefix,
-            var_suffix_id, var_suffix_name, addition_mode):
+    class ConfigForAddTriple:
         """
-        Create with given backend. For the meaning of the other three arguments,
-        see the doctest for enhance_query below.
+        Configuration for adding a new triple to the query. See __init__ for the
+        elements of the configuration.  """
+
+        def __init__(self, predicate, suffix, position, **kwargs):
+            """
+            The first two arguments are the name of the predicate to be added
+            and the suffix of the to-be-added variable that will be added to the
+            existing variable (which appears as subject of the predicate).
+
+            The third argument is the position at which the new variable will be
+            added in the SELECT clause. 0 means to replace the subject variable
+            of the new triple. A positive number k means to add it k to the
+            right of the subject variable. A negative number -k means to add it
+            at the end of the SELECT clause, where -1 means at the very end, -2
+            means one before that, etc.
+            
+            For the keyword args, there are the following options and defaults:
+
+            TODO: These cannot yet be controlled via the command line.
+
+            position_first: position for the first occurrence. 
+
+            optional: Whether to put the new triple in OPTIONAL { ... } or not.
+            The default is not to do this.
+
+            predicate_exists_regex: The regex used to search whether the
+            predicate or a similar one already exists. The default is to search
+            for a triple with a predicate that matches either the full name or
+            the suffix of the given "predicate", with an arbitrary prefix. For
+            example, for predicate <http://www.wikidata.org/prop/direct/P18>,
+            the default would be to search for triples with a predicate that
+            either matches exactly this IRI or ends in :P18.
+            """
+
+            self.predicate = predicate
+            self.suffix = suffix
+            self.position = int(position)
+            self.position_repeated = int(position)
+            self.optional = kwargs.get("optional", False)
+            self.predicate_exists_regex = kwargs.get("predicate_exists_regex",
+                    "(%s|%s)" % (predicate,
+                        re.sub("^.*[/#](.*)>", "\\S+:\\1", predicate)))
+            # print("Predicate exists REGEX: ", self.predicate_exists_regex)
+
+            # HACK: Hard-coded stuff, make configurable (it's not hard)
+
+            # For name predicate, replace after first
+            if predicate.find("label") != -1:
+                self.position_repeated = 0
+
+            # Images and coordinates should be OPTIONAL
+            if suffix == "_image" or suffix == "_coords":
+                self.optional = True
+
+            # Only add triple for this select variable position.
+            #
+            # TODO: Cannot yet be controlled by command line options.
+            self.select_variable_position = None
+            if suffix == "_image":
+                self.select_variable_position = 0
+            elif suffix == "_coords":
+                self.select_variable_position = -1
+
+
+    def __init__(self, backend, subject_var_suffix,
+            configs_for_add_triple):
+        """
+        Create with given backendi and config.
         """
         self.backend = backend
-        self.name_predicate = name_predicate
-        self.name_predicate_prefix = name_predicate_prefix
-        self.var_suffix_id = var_suffix_id
-        self.var_suffix_name = var_suffix_name
-        self.addition_mode = addition_mode
+        self.subject_var_suffix = subject_var_suffix
+        self.configs_for_add_triple = configs_for_add_triple
 
-        # Which of the two variable types (id and name) are we renaming?
-        #
-        # Note: if we do not rename id vars, we have to rename name vars, since
-        # we cannot have the same name for both.
-        self.rename_id_vars = var_suffix_id != ""
-        self.rename_name_vars = var_suffix_name != "" or var_suffix_id == ""
     
     def get_query_parts(self, sparql_query):
         """
@@ -91,7 +145,7 @@ class QleverNameService:
         that the SPARQL query is syntactically correct and no backend is needed.
 
         >>> log.setLevel(logging.ERROR)
-        >>> qns = QleverNameService(None, None, None, None, None, None)
+        >>> qns = QleverNameService(None, None, None)
         >>> parts = qns.get_query_parts(
         ...     " PREFIX a: <bla>  PREFIX bc: <http://y> \\n"
         ...     "SELECT ?x_  ( COUNT( ?y_2) AS ?yy)  WHERE \\n"
@@ -188,11 +242,9 @@ class QleverNameService:
         >>> log.setLevel(logging.ERROR)
         >>> backend = Backend(
         ...     "https://qlever.cs.uni-freiburg.de:443/api/wikidata", 1, 0)
-        >>> qns = QleverNameService(
-        ...     backend,
-        ...     "@en@rdfs:label",
-        ...     "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>",
-        ...     "_id", "_name", "add-all")
+        >>> config = QleverNameService.ConfigForAddTriple(
+        ...     "@en@<http://www.w3.org/2000/01/rdf-schema#label>", "_name", "1")
+        >>> qns = QleverNameService(backend, "_id", [config])
         >>> sparql_lines = qns.enhance_query(
         ...     "PREFIX wdt: <http://www.wikidata.org/prop/direct/> "
         ...     "PREFIX wd: <http://www.wikidata.org/entity/>  "
@@ -213,7 +265,7 @@ class QleverNameService:
         >>> sparql_lines[5]
         '    ?x_id wdt:P31 wd:Q5 . ?x_id wdt:P17 ?y . ?y rdfs:label ?y_label } }'
         >>> sparql_lines[6]
-        '  ?x_id @en@rdfs:label ?x_name'
+        '  ?x_id @en@<http://www.w3.org/2000/01/rdf-schema#label> ?x_name'
         >>> sparql_lines[7]
         '} LIMIT 10'
         >>> len(sparql_lines)
@@ -248,57 +300,27 @@ class QleverNameService:
         new_select_vars_list = select_vars_list.copy()
         new_triples_list = []
         num_vars_added = 0
-        for i, var in enumerate(select_vars_list):
-            # For each check and replace, we have three components:
-            # 1. The regex to check whether the triple is already there
-            # 2. The new predicate
-            # 3. The prefix of the new predicate
-            # 4. The suffix of the new variable
-            # 5. Position of new variable (0 = replace, 1 = add to the right, -1
-            # = at the end, -2 = one before that, etc.)
-            # 6. Optional (True if yes)
-            new_triple_configs = []
-            # Try to add name triple?
-            if self.addition_mode:
-                new_triple_configs.append([
-                    "(@[a-z]+@)?(rdfs:label|schema:name)",
-                    self.name_predicate,
-                    "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>",
-                    self.var_suffix_name,
-                    1 if self.addition_mode == "add-all" or \
-                        (self.addition_mode == "add-first" and 
-                            num_vars_added == 0) else 0,
-                    False])
-            # Try to add image triple?
-            if i == 0:
-                new_triple_configs.append([
-                    "wdt:P18",
-                    "wdt:P18",
-                    "PREFIX wdt: <http://www.wikidata.org/prop/direct/>",
-                    "_image",
-                    -1,
-                    True])
-            # Try to add coordinates triple?
-            if i == len(select_vars_list) - 1:
-                new_triple_configs.append([
-                    "wdt:P625",
-                    "wdt:P625",
-                    "PREFIX wdt: <http://www.wikidata.org/prop/direct/>",
-                    "_coords",
-                    -1,
-                    True])
+        num_triples_added_per_config = [0] * len(self.configs_for_add_triple)
+        for var_index, var in enumerate(select_vars_list):
 
             # Keep track of whether this variable has been renamed (renamed at
             # most once) and the original name.
             var_has_been_renamed = False
             original_var = var
 
-            for new_triple_exists_regex, \
-                new_predicate, \
-                new_predicate_prefix, \
-                new_var_suffix, \
-                new_var_position, \
-                new_triple_is_optional in new_triple_configs:
+            # For each --add-triple configuration check if the corresponding
+            # triple should be added and if yes, add it.
+            for config_index, config in enumerate(self.configs_for_add_triple):
+
+                # Some configs only apply to select variables in certain
+                # positions.
+                if config.select_variable_position != None:
+                    select_variable_position = config.select_variable_position \
+                            if config.select_variable_position >= 0 \
+                            else len(select_vars_list) + \
+                                     config.select_variable_position
+                    if var_index != select_variable_position:
+                        continue
 
                 # Add name_predicate_prefix if not already in list of prefixes
                 #
@@ -311,21 +333,21 @@ class QleverNameService:
                 # different definition. The result will be that no result will
                 # be found for any of the name probe queries below and no name
                 # triples will be added to the query.
-                if not new_predicate_prefix in prefixes_list:
-                    prefixes_list.append(new_predicate_prefix)
+                # if not new_predicate_prefix in prefixes_list:
+                #     prefixes_list.append(new_predicate_prefix)
 
                 # First check property 1. The regex captures which predicates we
                 # count as name predicates when checking whether a "name triple"
                 # already exists. Feel free to extend this.
                 if re.search(re.sub("\?", "\\?", var) + "\\s+"
-                    + new_triple_exists_regex, body_string) != None:
+                    + config.predicate_exists_regex, body_string) != None:
                     continue
 
                 # Now check property 2 via a SPARQL query (does it make sense to
                 # add a name triple for this variable). Make sure to take the
                 # current name of the variable (maybe it was renamed already).
-                test_var = var + new_var_suffix + "_test"
-                test_triple = f"  {var} {new_predicate} {test_var}"
+                test_var = var + config.suffix + "_test"
+                test_triple = f"  {var} {config.predicate} {test_var}"
                 test_query = self.make_sparql_query_from_parts(
                     prefixes_list, [test_var], [test_triple],
                     select_vars_string, body_string, group_by_string, "LIMIT 1")
@@ -364,12 +386,11 @@ class QleverNameService:
                     # Note: id_var was initialized to None above to make sure
                     # that in case we test several triples for addition, the
                     # variable name is changed only once.
-                    if self.rename_id_vars \
-                            and not var_has_been_renamed \
-                            and self.var_suffix_id != "":
-                        var = original_var + self.var_suffix_id
+                    if self.subject_var_suffix != "" \
+                            and not var_has_been_renamed:
+                        var = original_var + self.subject_var_suffix
                         log.info(f"Renaming {original_var} to {var}")
-                        new_select_vars_list[i + num_vars_added] = var
+                        new_select_vars_list[var_index + num_vars_added] = var
                         # Replace all occurrences of the original variable (the
                         # \\b is there to make sure that only whole-word matches
                         # are replaced).
@@ -381,22 +402,28 @@ class QleverNameService:
                                 select_vars_string)
                         var_has_been_renamed = True
                     # The name of the new variable.
-                    new_var = original_var + new_var_suffix
+                    new_var = original_var + config.suffix
                     # The id variable and the new variable must not have the
                     # same name.
                     assert(var != new_var)
                     # Add new triple
-                    new_triple = f"{var} {new_predicate} {new_var}"
-                    if new_triple_is_optional:
+                    new_triple = f"{var} {config.predicate} {new_var}"
+                    if config.optional:
                         new_triple = f"OPTIONAL {{ {new_triple} }}"
                     log.info("\x1b[0mAdding triple \"%s\"\x1b[0m"
                             % re.sub("^\s+", "", new_triple))
                     new_triples_list.append("  " + new_triple)
+                    # Get position argument depending on how many triples we
+                    # have already added for this config.
+                    if num_triples_added_per_config[config_index] == 0:
+                        position = config.position
+                    else:
+                        position = config.position_repeated
                     # CASE 1: Replace the id variable by the name variable
-                    if new_var_position == 0:
+                    if position == 0:
                         log.debug(f"Replacing id variable \"{var}\" "
                                   f"by new variable \"{new_var}\"")
-                        new_select_vars_list[i + num_vars_added] = new_var
+                        new_select_vars_list[var_index + num_vars_added] = new_var
                     # CASE 2: Keep the id variable, add the new variable. Do not
                     # count variables appended to the end towards
                     # num_vars_added.
@@ -405,14 +432,18 @@ class QleverNameService:
                                   f"adding new variable \"{new_var}\"")
                         # Position +1 means right next to current position
                         # Position -1 means last position, -2 second to last.
-                        if new_var_position > 0:
+                        if position > 0:
                             num_vars_added += 1
-                            pos = i + num_vars_added + new_var_position - 1
+                            pos = var_index + num_vars_added + position - 1
                         else:
-                            pos = len(new_select_vars_list) + new_var_position + 1
+                            pos = len(new_select_vars_list) + position + 1
                         new_select_vars_list.insert(pos, new_var)
                     log.debug("\x1b[34mNew select var list: %s\x1b[0m" 
                                 % " ".join(new_select_vars_list))
+
+                    # Keep track of how many triples we add per predicate.
+                    num_triples_added_per_config[config_index] += 1
+
 
         # Add the name triples for the variables, where names exist.
         enhanced_query = self.make_sparql_query_from_parts(
@@ -804,20 +835,19 @@ if __name__ == "__main__":
             "--timeout", dest="timeout_normal", type=float, default=10.0,
             help="Timeout for Backend 1, when asking ordinary queries")
     parser.add_argument(
-            "--add-name-triples", dest="add_name_triples", type=str,
-            default="add_first",
-            help="Add name triples for id variables. Options are:\n"
-            " add-all     : have both name vars and id vars\n"
-            " replace-all : replace all id vars by name vars\n"
-            " add-first   : add name var for first id var, replace others\n"
-            " [other]     : do not add name triples at all\n")
+            "--subject-var-suffix", dest="subject_var_suffix",
+            type=str, default="_id",
+            help="Suffix for subject variable of added triple (can be empty)")
     parser.add_argument(
-            "--id-suffix", dest="id_suffix", type=str, default="_id",
-            help="Suffix for id variables (can be empty)")
-    parser.add_argument(
-            "--name-suffix", dest="name_suffix", type=str, default="_name",
-            help="Suffix for name variables (can be empty)")
-
+            "--add-triple", dest="configs_for_add_triple",
+            type=str, nargs="*",
+            default="@en@<http://www.w3.org/2000/01/rdf-schema#>:_name_:1",
+            help="Configuration for adding a triple in the form"
+            " <predicate>|<suffix>|<position>, where <predicate> is the"
+            " name of the new predicate, suffix is what is added to the"
+            " subject variable name to derive the new variable name,"
+            " and position is the placement of the new variable in"
+            " the SELECT clause of the SPARQL query")
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -827,18 +857,22 @@ if __name__ == "__main__":
     log.info("Timeout for single-backend queries is %.1fs" %
             args.timeout_normal)
 
-    # Create Qlever Name Service (None if not asked for).
-    if args.add_name_triples in ["add-all", "replace-all", "add-first"]:
-        if args.id_suffix == args.name_suffix and \
-                args.add_name_triples in ["add-all", "add-first"]:
-                    log.error("If we add name triples, the id suffix "
-                              "and the name suffix must be different")
-                    sys.exit(1)
+    # Parse arguments to --add-triple into ConfigForAddTriple objects.
+    configs_for_add_triple = []
+    for config_arg in args.configs_for_add_triple:
+        config_parts = config_arg.split("|")
+        if len(config_parts) != 3:
+            log.error("Argument to --add-triple must be of the form"
+                      " <predicate>|<suffix>|<position>, was: ",
+                      config_arg)
+            sys.exit(1)
+        config = QleverNameService.ConfigForAddTriple(*config_parts)
+        configs_for_add_triple.append(config)
+
+    # Create Qlever Name Service (None if no --add-triple is specified).
+    if len(configs_for_add_triple) > 0:
         qlever_name_service = QleverNameService(
-                backend_2,
-                "@en@rdfs:label",
-                "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>",
-                args.id_suffix, args.name_suffix, args.add_name_triples)
+                backend_2, args.subject_var_suffix, configs_for_add_triple)
         log.info("\x1b[1mQLever Name Service is ACTIVE\x1b[0m")
     else:
         qlever_name_service = None
