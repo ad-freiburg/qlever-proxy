@@ -500,9 +500,13 @@ class Backend:
         """
 
         backend_url_parsed = urllib.parse.urlparse(backend_url)
-        self.host, self.port = backend_url_parsed.netloc.split(':')
+        if backend_url_parsed.netloc.find(":") != -1:
+            self.host, self.port = backend_url_parsed.netloc.split(':')
+            self.port = int(self.port)
+        else:
+            self.host = backend_url_parsed.netloc
+            self.port = 443 if backend_url_parsed.scheme == "https" else 80
         self.base_path = backend_url_parsed.path if backend_url_parsed.path else "/"
-        self.port = int(self.port) if self.port else 80
         self.timeout_seconds = timeout_seconds
         self.backend_id = backend_id
 
