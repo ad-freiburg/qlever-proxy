@@ -25,7 +25,7 @@ log = logging.getLogger("proxy logger")
 log.setLevel(logging.INFO)
 handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter(
-    "%(asctime)s.%(msecs)03d %(levelname)s  %(message)s", "%Y-%m-%d %H:%M:%S"))
+    "%(asctime)s.%(msecs)03d %(levelname)-5s %(message)s", "%Y-%m-%d %H:%M:%S"))
 log.addHandler(handler)
 
 # Function for abbreviating long strings in log. When called with second
@@ -33,7 +33,7 @@ log.addHandler(handler)
 # by a single space. When called with compact_ws=True, only do the latter.
 # space.
 def abbrev(long_string, **kwargs):
-    max_length = 80
+    max_length = kwargs.get("max_length", 80)
     long_string = "\"" + long_string + "\""
     if kwargs.get("unquote", False):
         long_string = re.sub("\n", " ",
@@ -81,8 +81,6 @@ class QleverNameService:
             
             For the keyword args, there are the following options and defaults:
 
-            TODO: These cannot yet be controlled via the command line.
-
             position_first: position for the first occurrence. 
 
             optional: Whether to put the new triple in OPTIONAL { ... } or not.
@@ -107,7 +105,7 @@ class QleverNameService:
                         re.sub("^.*[/#](.*)>", "\\S+:\\1", predicate)))
             # print("Predicate exists REGEX: ", self.predicate_exists_regex)
 
-            # HACK: Hard-coded stuff, make configurable (it's not hard)
+            # TODO: Hard-coded stuff, make configurable (it's not hard)
 
             # For name predicate, replace after first
             if predicate.find("label") != -1:
@@ -494,7 +492,8 @@ class Backend:
     evaluation, where a first version of this code has been copied from.
     """
 
-    def __init__(self, backend_url, timeout_seconds, backend_id):
+    def __init__(self, backend_url, timeout_seconds, backend_id,
+            pin_results=False, clear_cache=False, show_cache_stats=True):
         """
         Create HTTP connection pool for asking request to this backend.
         """
@@ -509,6 +508,10 @@ class Backend:
         self.base_path = backend_url_parsed.path if backend_url_parsed.path else "/"
         self.timeout_seconds = timeout_seconds
         self.backend_id = backend_id
+        self.pin_results = pin_results
+        self.clear_cache = clear_cache
+        self.always_show_cache_stats = show_cache_stats
+        self.log_prefix = "Backend %d:" % self.backend_id
 
         # Values copied from eval.py from the QLever evaluation ... needed here?
         max_pool_size = 4
@@ -521,9 +524,17 @@ class Backend:
                                   backoff_factor=0.1),
             cert_reqs='CERT_REQUIRED', ca_certs=certifi.where())
 
+        # Optionally clear the cache initially.
+        if self.clear_cache:
+            clear_cache_fields = { "cmd": "clearcachecomplete" }
+            clear_cache_response = self.connection_pool.request(
+                'GET', self.base_path, fields=clear_cache_fields)
+            assert(clear_cache_response.status == 200)
+
         # Log what we have created.
-        log.info("Backend %d: %s:%d%s with timeout %.1fs",
-             backend_id, self.host, self.port, self.base_path, timeout_seconds)
+        log.info("%s %s:%d%s with timeout %4.1fs%s", self.log_prefix,
+             self.host, self.port, self.base_path, timeout_seconds,
+             " [cache completely cleared]" if self.clear_cache else "")
 
     def query_and_write_to_queue(self, query_path, timeout, queue):
         """ 
@@ -537,45 +548,93 @@ class Backend:
         response = self.query(query_path, timeout)
         queue.put((response, self.backend_id))
 
-    def query(self, query_path, timeout):
+    def query(self, query_path, timeout, **kwargs):
         """ 
         Sent a GET request to the QLever backend, with the given path (which
         should always start with a / even if it's a relative path).
+        
+        If never_pin_result=True, override self.pin_results.
         """
 
-        log_prefix = "Backend %d:" % self.backend_id
-        full_path = self.base_path + query_path
-        log.debug("%s Sending GET request %s",
-                  log_prefix, abbrev(full_path, unquote=True))
+        # Pin result to cache if self.pin_results.
+        #
+        # Can be overridden by kwarg pin_results_override. This is used by
+        # QleverNameService, for which we do not want to pin results.  The
+        # reason is that these queries are arbitrary and the subtree results can
+        # be huge. In contrast, the large subtree results for the agnostic
+        # queries all come from a very small set.
+        pin_results_params = "&pinresult=true&pinsubtrees=true" \
+            if kwargs.get("pin_results_override", self.pin_results) else ""
 
-        headers = urllib3.make_headers(keep_alive=False)  # , fields=params
+        # Build Query URL.
+        #
+        # Note: We cannot easily use "fields=..." for the URL parameters in
+        # connection_pool.request below because "query_path" may come from the
+        # query received by the proxy and may or may not contain parameters, so
+        # we cannot simply append with "?..." (which is what fields=... does).
+        full_path = self.base_path + query_path + pin_results_params
+        log.debug("%s Sending GET request %s",
+                  self.log_prefix, abbrev(full_path, unquote=True))
+
         try:
-            response = self.connection_pool.request(
-                           'GET', full_path, headers=headers, timeout=timeout)
+            # TODO: Understand why we need keep_alive=False?
+            headers = urllib3.make_headers(keep_alive=False)
+            response = self.connection_pool.request('GET', full_path,
+                    fields=None, headers=headers, timeout=timeout)
             assert(response.status == 200)
-            log.debug("%s Response data from backend %d: %s", log_prefix,
-                abbrev(str(response.data)))
+            log.debug("%s Response data: %s", self.log_prefix,
+                abbrev(str(response.data), max_length=500))
             # log.debug("Content type  : %s", response.getheader("Content-Type"))
             # log.debug("All headers   : %s", response.getheaders())
+
+            # If query successful and we pinned the result, output cache stats.
+            # If args.show_cache_stats_2, always show it.
+            if self.pin_results or self.always_show_cache_stats:
+                self.show_cache_stats()
+
             return Response(http_response=response)
         except socket.timeout as e:
             error_msg = "%s Timeout (socket.timeout) after %.1f seconds" \
-                    % (log_prefix, timeout)
+                    % (self.log_prefix, timeout)
             log.info(error_msg)
             return Response(query_path=query_path, error_msg=error_msg)
         except urllib3.exceptions.ReadTimeoutError as e:
             error_msg = "%s Timeout (ReadTimeoutError) after %.1f seconds" \
-                    % (log_prefix, timeout)
+                    % (self.log_prefix, timeout)
             log.info(error_msg)
             return Response(query_path=query_path, error_msg=error_msg)
         except urllib3.exceptions.MaxRetryError as e:
             error_msg = "%s Timeout (MaxRetryError) after %.1f seconds" \
-                    % (log_prefix, timeout)
+                    % (self.log_prefix, timeout)
             log.info(error_msg)
             return Response(query_path=query_path, error_msg=error_msg)
         except Exception as e:
             error_msg = "%s Error with request to %s (%s)" \
-                    % (log_prefix, self.host, str(e))
+                    % (self.log_prefix, self.host, str(e))
+            log.info(error_msg)
+            return Response(query_path=query_path, error_msg=error_msg)
+
+    def show_cache_stats(self):
+        try:
+            # Get the response and throw exception if status != 200.
+            cache_stats_fields = { "cmd": "cachestats" }
+            cache_stats_response = self.connection_pool.request(
+                'GET', self.base_path, fields=cache_stats_fields,
+                timeout=self.timeout_seconds)
+            assert(cache_stats_response.status == 200)
+            # Show cache stats in a nicely readable way.
+            cache_stats = eval(cache_stats_response.data.decode("utf-8"))
+            num_results = cache_stats["num-cached-elements"]
+            size_results_mb = cache_stats["num-cached-elements"] / 1e9
+            num_pinned = cache_stats["num-pinned-elements"]
+            size_pinned_mb = cache_stats["pinned-size"] / 1e9
+            log.info("%s %d normally cached results in %.1f GB"
+                     " + %d pinned results in %.1f GB"
+                     % (self.log_prefix, num_results, size_results_mb,
+                         num_pinned, size_pinned_mb))
+        except Exception as e:
+            error_msg = "%s Error getting cache statistics from %s:%d (%s)" \
+                    % (self.log_prefix, self.host, self.port, str(e))
             log.info(error_msg)
             return Response(query_path=query_path, error_msg=error_msg)
 
@@ -651,6 +710,8 @@ class QueryProcessor:
                         % re.sub("\s+", " ", new_sparql_query))
                 parameters[0] = ("query", new_sparql_query)
                 path = "/?" + urllib.parse.urlencode(parameters)
+            else:
+                log.info("Ordinary query, processed using backend 1")
             return backend_1.query(path, self.timeout_normal)
 
 
@@ -732,10 +793,13 @@ def MakeRequestHandler(
             self.query_processor = QueryProcessor(
                     backend_1, backend_2, timeout_normal, qlever_name_service)
             super(RequestHandler, self).__init__(*args, **kwargs)
-    
+     
         def log_message(self, format_string, *args):
-            """ We do our own logging. """
-            log.debug(format_string % args)
+            """
+            This is called for example by send_response below. By doing nothing
+            here, we suppress messages from BaseHTTPRequestHandler.
+            """
+            # log.debug(format_string % args)
     
         def do_GET(self):
             """
@@ -752,16 +816,17 @@ def MakeRequestHandler(
             path = str(self.path)
             headers = re.sub("\n", " | ", str(self.headers))
             path_unquoted = urllib.parse.unquote(path)
-            log.info("")
+            # log.info("")
+            print()
             log.info("GET request received: %s"
                     % abbrev(path_unquoted, unquote=True))
-            log.debug("Headers: %s" % headers)
+            # log.debug("Headers: %s" % headers)
     
             # Process query. The query process will decided whether to ask both
             # backends in parallel, whether to call the QLever Name Service,
             # etc. If something goes wrong, the response is None.
             response = self.query_processor.query(path)
-    
+
             # For both case below, the QLever UI will only accept the response
             # when there is a Access-Control-Allow-Origin header.
             #
@@ -806,7 +871,8 @@ def server_loop(hostname, port,
     request_handler_class = MakeRequestHandler(
             backend_1, backend_2, timeout_normal, qlever_name_service)
     server = http.server.HTTPServer(server_address, request_handler_class)
-    log.info("Listening to GET requests on %s:%d" % (hostname, port))
+    log.info("Listening to GET requests on \x1b[1m%s:%d\x1b[0m"
+                 % (socket.getfqdn(), port))
     server.serve_forever()
 
 
@@ -818,7 +884,7 @@ if __name__ == "__main__":
             formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument(
-            "--port", dest="port", type=int, default=8904,
+            "--port", dest="port", type=int, required=True,
             help="Run proxy on this port")
     parser.add_argument(
             "--backend-1", dest="backend_1", type=str,
@@ -852,12 +918,34 @@ if __name__ == "__main__":
             " subject variable name to derive the new variable name,"
             " and position is the placement of the new variable in"
             " the SELECT clause of the SPARQL query")
+    parser.add_argument(
+            "--log-level", dest="log_level", type=str,
+            choices=["INFO", "DEBUG", "ERROR"], default="INFO",
+            help="Log level (INFO, DEBUG, ERROR)")
+    parser.add_argument(
+            "--pin-results-backend-2", dest="pin_results_2",
+            action="store_true", default=False,
+            help="Pin results from backend 2 to the cache permanently"
+            " (QLever URL parameter pinresult=true and pinsubtrees=true)")
+    parser.add_argument(
+            "--clear-cache-2", dest="clear_cache_2",
+            action="store_true", default=False,
+            help="Clear cache from backend 2 initially, including pinned"
+            " results (QLever URL parameter cmd=clearcachecomplete)")
+    parser.add_argument(
+            "--show-cache-stats-2", dest="show_cache_stats_2",
+            action="store_true", default=True,
+            help="Show cache stats for backend 2 after every query")
 
     args = parser.parse_args(sys.argv[1:])
+    log.setLevel(eval("logging.%s" % args.log_level))
+    log.info("Log level is \x1b[1m%s\x1b[0m" % args.log_level)
 
     # Create backends. The third argument is the id (1 = primary, 2 = fallback)
     backend_1 = Backend(args.backend_1, args.timeout_1, 1)
-    backend_2 = Backend(args.backend_2, args.timeout_2, 2)
+    backend_2 = Backend(args.backend_2, args.timeout_2, 2,
+        args.pin_results_2, args.clear_cache_2, args.show_cache_stats_2)
+    backend_2.show_cache_stats()
     log.info("Timeout for single-backend queries is %.1fs" %
             args.timeout_normal)
 
@@ -877,10 +965,11 @@ if __name__ == "__main__":
     if len(configs_for_add_triple) > 0:
         qlever_name_service = QleverNameService(
                 backend_2, args.subject_var_suffix, configs_for_add_triple)
-        log.info("\x1b[1mQLever Name Service is ACTIVE\x1b[0m")
+        log.info("QLever Name Service is \x1b[1mACTIVE\x1b[0m"
+                 " (only for queries to backend 1, using backend 2)")
     else:
         qlever_name_service = None
-        log.info("\x1b[1mQLever Name Service is not active\x1b[0m"
+        log.info("QLever Name Service is \x1b[1mNOT active\x1b[0m"
                  " -> see usage info (--help) for how to activate")
 
     # Listen and respond to queries at that port, no matter to which hostname on
