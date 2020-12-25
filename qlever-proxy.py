@@ -875,13 +875,32 @@ def server_loop(hostname, port,
                  % (socket.getfqdn(), port))
     server.serve_forever()
 
+class MyArgumentParser(argparse.ArgumentParser):
+    """
+    Override the error message so that it prints the full help text if the
+    script is called without arguments or with a wrong argument.
+    """
+
+    def error(self, message):
+        print("ArgumentParser: %s\n" % message)
+        self.print_help()
+        sys.exit(1)
+
 
 if __name__ == "__main__":
 
     # Parse command line arguments + usage info.
-    parser = argparse.ArgumentParser(
-            description="QLever Proxy, see the README.md for more information",
-            formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = MyArgumentParser(
+            # description="QLever Proxy",
+            epilog="See the README.md for more information. Here is an example"
+            " invocation for Wikidata:\n\n"
+            "python3 qlever-proxy.py --port 8904"
+            " --add-triple \"@en@<http://www.w3.org/2000/01/rdf-schema#label>||1\""
+            " --backend-1 \"https://qlever.cs.uni-freiburg.de/api/wikidata\""
+            " --backend-2 \"https://qlever.cs.uni-freiburg.de/api/wikidata\""
+            " --timeout-1 0.5 --timeout-2 30.0 --pin-results-backend-2",
+            formatter_class=argparse.RawDescriptionHelpFormatter)
+            # formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument(
             "--port", dest="port", type=int, required=True,
