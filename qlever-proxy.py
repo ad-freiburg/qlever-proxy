@@ -124,6 +124,15 @@ class QleverNameService:
             elif suffix == "_coords":
                 self.select_variable_position = -1
 
+        def __repr__(self):
+            """
+            Config as human-readable string (used for logging).
+            """
+
+            suffix_show = self.suffix if self.suffix != "" else "None"
+            return f"{self.predicate}, suffix: {suffix_show}" \
+                   f", position: {self.position}, optional: {self.optional}"
+
 
     def __init__(self, backend, subject_var_suffix,
             configs_for_add_triple):
@@ -951,9 +960,10 @@ if __name__ == "__main__":
             help="Primary backend (prefer if it responds in time)")
     parser.add_argument(
             "--backend-2", dest="backend_2", type=str,
-            default="https://qlever.cs.uni-freiburg.de:443/api/wikidata-vulcano",
+            default="",
             help="Fallback backend (ask simpler query, when Backend 1"
-            " does not respond in time")
+            " does not respond in time. When empty (which is the default)"
+            ", same as Backend 1.")
     parser.add_argument(
             "--timeout-1", dest="timeout_1", type=float, default=0.5,
             help="Timeout for Backend 1, when asking parallel queries")
@@ -970,13 +980,13 @@ if __name__ == "__main__":
     parser.add_argument(
             "--add-triple", dest="configs_for_add_triple",
             type=str, nargs="*",
-            default="@en@<http://www.w3.org/2000/01/rdf-schema#>:_name_:1",
+            default=["@en@<http://www.w3.org/2000/01/rdf-schema#>||1"],
             help="Configuration for adding a triple in the form"
             " <predicate>|<suffix>|<position>, where <predicate> is the"
             " name of the new predicate, suffix is what is added to the"
-            " subject variable name to derive the new variable name,"
-            " and position is the placement of the new variable in"
-            " the SELECT clause of the SPARQL query")
+            " subject variable name to derive the new variable name"
+            " (can be empty), and position is the placement of the new"
+            " variable in the SELECT clause of the SPARQL query")
     parser.add_argument(
             "--log-level", dest="log_level", type=str,
             choices=["INFO", "DEBUG", "ERROR"], default="INFO",
@@ -1002,6 +1012,8 @@ if __name__ == "__main__":
     log.info("Log level is \x1b[1m%s\x1b[0m" % args.log_level)
 
     # Create backends. The third argument is the id (1 = primary, 2 = fallback)
+    if args.backend_2 == "":
+        args.backend_2 = args.backend_1
     backend_1 = Backend(args.backend_1, args.timeout_1, 1)
     backend_2 = Backend(args.backend_2, args.timeout_2, 2,
         args.pin_results_2, args.clear_cache_2, args.show_cache_stats_2)
@@ -1026,7 +1038,10 @@ if __name__ == "__main__":
         qlever_name_service = QleverNameService(
                 backend_2, args.subject_var_suffix, configs_for_add_triple)
         log.info("QLever Name Service is \x1b[1mACTIVE\x1b[0m"
-                 " (only for queries to backend 1, using backend 2)")
+                 " (only for queries to backend 1, using backend 2)"
+                 ", configs are:")
+        for config in configs_for_add_triple:
+            log.info("\x1b[90m" + str(config) + "\x1b[0m")
     else:
         qlever_name_service = None
         log.info("QLever Name Service is \x1b[1mNOT active\x1b[0m"
