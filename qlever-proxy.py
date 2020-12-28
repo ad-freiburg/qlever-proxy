@@ -344,20 +344,33 @@ class QleverNameService:
                 # Now check property 2 via a SPARQL query (does it make sense to
                 # add a name triple for this variable). Make sure to take the
                 # current name of the variable (maybe it was renamed already).
+                # 
+                # TODO: Due to a current bug in PR#355 (as of 25.12.2020) when
+                # the inner query has only a single triple, explicitly order the
+                # inner query by {var}.
+                group_by_string_enhanced = group_by_string + f"ORDER BY {var} "
+                log.info("\x1b[35;1mEnhancing test query by \"ORDER BY {var}\""
+                         " to circumvent bug in current PR355"
+                         " (as of 25.12.2020)\x1b[0m")
+
                 test_var = var + config.suffix + "_test"
                 test_triple = f"  {var} {config.predicate} {test_var}"
                 test_query = self.make_sparql_query_from_parts(
                     prefixes_list, [test_var], [test_triple],
-                    select_vars_string, body_string, group_by_string, "LIMIT 1")
+                    select_vars_string, body_string, group_by_string_enhanced,
+                    "LIMIT 1")
                 log.debug(f"Test if adding \"{test_triple}\" gives result"
                           f"\n\x1b[90m{test_query}\x1b[0m")
+
                 # SPARQL query in a separate try block, so that we can give a
-                # specific error message for that.
+                # specific error message for that. Make sure that the result and
+                # sub-results of this query are NOT pinned to the cahce.
                 response = None
                 try:
                     response = self.backend.query("/?query=" +
                         urllib.parse.quote(test_query),
-                        self.backend.timeout_seconds)
+                        self.backend.timeout_seconds,
+                        pin_results_override=False)
                 except Exception as e:
                     log.error("\x1b[31mCould not get result from backend\x1b[0m")
                     log.error("Error message: %s" % str(e))
@@ -465,8 +478,17 @@ class Response:
     def __init__(self, **kwargs):
         """
         Three possible keywords arguments: http_response, query_path, error_msg.
+
+        NOTE: In a prior version http_response == None was taken as equivalent to
+        error. However that was not correct because some QLever errors like
+        "allocated more than the specified limit" lead to a http_response !=
+        None but with an error message.
         """
+
         self.http_response = kwargs.get("http_response", None)
+        self.error_data = None
+
+        # If http_response == None, create an error message.
         if self.http_response == None:
             query_path = kwargs.get("query_path", "[no query path specified]")
             error_msg = kwargs.get("error_msg", "[no error message specified]")
@@ -478,9 +500,20 @@ class Response:
                     "status": "ERROR",
                     "resultsize": "0",
                     "time": { "total": "0ms", "computeResult": "0ms" },
-                    "exception": error_msg })
-        else:
-            self.error_data = None
+                    "exception": error_msg }).encode("utf-8")
+
+        # If http_response.data == "status": "ERROR" then set http_response to
+        # Note that  None and set error_data instead.
+        #
+        # NOTE: Alternatively, we could have create an http_response object with
+        # "status": "ERROR" in the case of an error, but I could not figure out
+        # how to create an http_response object.
+        if self.http_response != None and \
+                re.search("\"status\":\s*\"ERROR\"",
+                        self.http_response.data.decode("utf-8")):
+            log.debug("\x1b[31mQLever response with status \"ERROR\"\x1b[0m")
+            self.error_data = self.http_response.data
+            self.http_response = None
 
 
 class Backend:
@@ -573,7 +606,7 @@ class Backend:
         # query received by the proxy and may or may not contain parameters, so
         # we cannot simply append with "?..." (which is what fields=... does).
         full_path = self.base_path + query_path + pin_results_params
-        log.debug("%s Sending GET request %s",
+        log.info("%s Sending GET request %s",
                   self.log_prefix, abbrev(full_path, unquote=True))
 
         try:
@@ -583,13 +616,15 @@ class Backend:
                     fields=None, headers=headers, timeout=timeout)
             assert(response.status == 200)
             log.debug("%s Response data: %s", self.log_prefix,
-                abbrev(str(response.data), max_length=500))
+                abbrev(str(response.data), max_length=500, compact_ws=True))
             # log.debug("Content type  : %s", response.getheader("Content-Type"))
             # log.debug("All headers   : %s", response.getheaders())
 
             # If query successful and we pinned the result, output cache stats.
-            # If args.show_cache_stats_2, always show it.
-            if self.pin_results or self.always_show_cache_stats:
+            # If args.show_cache_stats_2, always show it. If
+            # pin_results_override is set and False, never show it.
+            if (self.pin_results or self.always_show_cache_stats) \
+                    and kwargs.get("pin_results_override", True) == True:
                 self.show_cache_stats()
 
             return Response(http_response=response)
@@ -741,10 +776,12 @@ class QueryProcessor:
         # 3. Backend 2 first -> wait for Backend 1 and prefer if response
         response, backend_id = result_queue.get()
         if backend_id == 1 and response.http_response == None:
+            backend_1_error_data = response.error_data
             response, backend_id = result_queue.get()
         elif backend_id == 2:
             log.info("Backend 2 responded first -> give Backend 1 a chance, too")
             response_2, backend_id_2 = result_queue.get()
+            backend_1_error_data = response_2.error_data
             if response_2.http_response != None:
                 response, backend_id = response_2, backend_id_2
 
@@ -755,8 +792,11 @@ class QueryProcessor:
         if response.http_response != None and backend_id == 1:
             log.info("BEST CASE: Backend 1 responded in time")
         elif response.http_response != None and backend_id == 2:
-            log.info("FALLBACK: Backend 1 did not respond in time, "
-                     "taking result from Backend 2")
+            log.info("FALLBACK: Backend 1 " +
+                     ("responsed with an error"
+                         if backend_1_error_data != None
+                         else "did not not respond in time") + 
+                     ", taking result from Backend 2")
         else:
             log.info("WORST CASE: Neither backend responded in time :-(")
 
@@ -819,7 +859,7 @@ def MakeRequestHandler(
             # log.info("")
             print()
             log.info("GET request received: %s"
-                    % abbrev(path_unquoted, unquote=True))
+                    % abbrev(path_unquoted, unquote=True, compact_ws=True))
             # log.debug("Headers: %s" % headers)
     
             # Process query. The query process will decided whether to ask both
@@ -848,7 +888,7 @@ def MakeRequestHandler(
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                self.wfile.write(response.error_data.encode("utf-8"))
+                self.wfile.write(response.error_data)
                 log.info("\x1b[31mSending QLever error JSON to caller\x1b[0m")
 
             end_time = time.time()
@@ -958,6 +998,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args(sys.argv[1:])
     log.setLevel(eval("logging.%s" % args.log_level))
+    print()
     log.info("Log level is \x1b[1m%s\x1b[0m" % args.log_level)
 
     # Create backends. The third argument is the id (1 = primary, 2 = fallback)
