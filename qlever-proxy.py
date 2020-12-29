@@ -1000,7 +1000,7 @@ if __name__ == "__main__":
             help="Log level (INFO, DEBUG, ERROR)")
     parser.add_argument(
             "--pin-results-backend-2", dest="pin_results_2",
-            action="store_true", default=False,
+            action="store_true", default=True,
             help="Pin results from backend 2 to the cache permanently"
             " (QLever URL parameter pinresult=true and pinsubtrees=true)")
     parser.add_argument(
@@ -1024,7 +1024,12 @@ if __name__ == "__main__":
     backend_1 = Backend(args.backend_1, args.timeout_1, 1)
     backend_2 = Backend(args.backend_2, args.timeout_2, 2,
         args.pin_results_2, args.clear_cache_2, args.show_cache_stats_2)
+    log.info("Backend 2: Are results and subtrees pinned? " +
+                ("YES" if args.pin_results_2 else "NO"))
     backend_2.show_cache_stats()
+    if args.clear_cache_2 == False:
+        log.info("Backend 2: To clear pinned queries from cache, start with"
+                 " option --clear-cache-2")
     log.info("Timeout for single-backend queries is %.1fs" %
             args.timeout_normal)
 
