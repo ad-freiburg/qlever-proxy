@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 """
 Copyright 2020, University of Freiburg,
 Chair of Algorithms and Data Structures
@@ -517,12 +518,18 @@ class Response:
         # NOTE: Alternatively, we could have create an http_response object with
         # "status": "ERROR" in the case of an error, but I could not figure out
         # how to create an http_response object.
-        if self.http_response != None and \
-                re.search("\"status\":\s*\"ERROR\"",
-                        self.http_response.data.decode("utf-8")):
-            log.debug("\x1b[31mQLever response with status \"ERROR\"\x1b[0m")
-            self.error_data = self.http_response.data
-            self.http_response = None
+        if self.http_response != None:
+            try:
+                result = json.loads(self.http_response.data.decode("utf-8"))
+                if result.get("status") == "ERROR":
+                    error_msg = result.get("exception", "[error msg not found]")
+                    log.info("\x1b[31mQLever response with ERROR: "
+                            + re.sub("\s+", " ", error_msg) + "\x1b[0m")
+                    self.error_data = self.http_response.data
+                    self.http_response = None
+            except Exception as e:
+                log.info("\x1b[31mCould not parse QLever result ("
+                             + str(e) + ")\x1b[0m")
 
 
 class Backend:
@@ -980,7 +987,7 @@ if __name__ == "__main__":
     parser.add_argument(
             "--add-triple", dest="configs_for_add_triple",
             type=str, nargs="*",
-            default=["@en@<http://www.w3.org/2000/01/rdf-schema#>||1"],
+            default=["@en@<http://www.w3.org/2000/01/rdf-schema#label>||1"],
             help="Configuration for adding a triple in the form"
             " <predicate>|<suffix>|<position>, where <predicate> is the"
             " name of the new predicate, suffix is what is added to the"
