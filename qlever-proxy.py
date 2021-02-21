@@ -676,7 +676,7 @@ class Backend:
             # Show cache stats in a nicely readable way.
             cache_stats = eval(cache_stats_response.data.decode("utf-8"))
             num_results = cache_stats["num-cached-elements"]
-            size_results_mb = cache_stats["num-cached-elements"] / 1e9
+            size_results_mb = cache_stats["cached-size"] / 1e9
             num_pinned = cache_stats["num-pinned-elements"]
             size_pinned_mb = cache_stats["pinned-size"] / 1e9
             log.info("%s %d normally cached results in %.1f GB"
@@ -962,8 +962,7 @@ if __name__ == "__main__":
             "--port", dest="port", type=int, required=True,
             help="Run proxy on this port")
     parser.add_argument(
-            "--backend-1", dest="backend_1", type=str,
-            default="https://qlever.cs.uni-freiburg.de:443/api/wikidata",
+            "--backend-1", dest="backend_1", type=str, required=True,
             help="Primary backend (prefer if it responds in time)")
     parser.add_argument(
             "--backend-2", dest="backend_2", type=str,
@@ -1000,7 +999,7 @@ if __name__ == "__main__":
             help="Log level (INFO, DEBUG, ERROR)")
     parser.add_argument(
             "--pin-results-backend-2", dest="pin_results_2",
-            action="store_true", default=True,
+            action="store_true", default=False,
             help="Pin results from backend 2 to the cache permanently"
             " (QLever URL parameter pinresult=true and pinsubtrees=true)")
     parser.add_argument(
@@ -1036,6 +1035,8 @@ if __name__ == "__main__":
     # Parse arguments to --add-triple into ConfigForAddTriple objects.
     configs_for_add_triple = []
     for config_arg in args.configs_for_add_triple:
+        if config_arg == "None":
+            break
         config_parts = config_arg.split("|")
         if len(config_parts) != 3:
             log.error("Argument to --add-triple must be of the form"
