@@ -106,10 +106,16 @@ class QleverNameService:
                         re.sub("^.*[/#](.*)>", "\\\S+:\\\1", predicate)))
             # print("Predicate exists REGEX: ", self.predicate_exists_regex)
 
-            # TODO: Hard-coded stuff, make configurable (it's not hard)
-
-            # For name predicate, replace after first
-            if predicate.find("label") != -1:
+            # If so desired, add only for the first variable and replace
+            # after the first.
+            # 
+            # TODO: This is currently disabled, make it configurable (it's not
+            # hard). Note that even without this, we have the choice already now
+            # to (exlusively) either add all new variables or replace all
+            # variables from which they were derived. There is just no way to
+            # configure a mix right now, like adding only for the leftmost such
+            # variable and replacing for all others.
+            if False and predicate.find("label") != -1:
                 self.position_repeated = 0
 
             # Images and coordinates should be OPTIONAL
@@ -138,7 +144,7 @@ class QleverNameService:
     def __init__(self, backend, subject_var_suffix,
             configs_for_add_triple):
         """
-        Create with given backendi and config.
+        Create with given backend and config.
         """
         self.backend = backend
         self.subject_var_suffix = subject_var_suffix
@@ -426,7 +432,12 @@ class QleverNameService:
                     new_var = original_var + config.suffix
                     # The id variable and the new variable must not have the
                     # same name.
-                    assert(var != new_var)
+                    if var == new_var:
+                        log.info("\x1b[31mAppending _ to distinguish added "
+                                 "variable from original (you can specify a "
+                                 "better suffix in the --add-triples "
+                                 "argument)\x1b[0m")
+                        new_var = new_var + "_"
                     # Add new triple
                     new_triple = f"{var} {config.predicate} {new_var}"
                     if config.optional:
@@ -1047,7 +1058,7 @@ if __name__ == "__main__":
             help="Timeout for Backend 1, when asking ordinary queries")
     parser.add_argument(
             "--subject-var-suffix", dest="subject_var_suffix",
-            type=str, default="_id",
+            type=str, default="",
             help="Suffix for subject variable of added triple (can be empty)")
     parser.add_argument(
             "--add-triple", dest="configs_for_add_triple",
