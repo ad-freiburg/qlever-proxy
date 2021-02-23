@@ -34,11 +34,11 @@ log.addHandler(handler)
 # by a single space. When called with compact_ws=True, only do the latter.
 # space.
 def abbrev(long_string, **kwargs):
-    max_length = kwargs.get("max_length", 80)
-    long_string = "\"" + long_string + "\""
+    max_length = kwargs.get("max_length", 500)
+    # long_string = "\"" + long_string + "\""
     if kwargs.get("unquote", False):
         long_string = re.sub("\n", " ",
-                urllib.parse.unquote_plus(long_string)) + " [unquoted]"
+                urllib.parse.unquote_plus(long_string)) # + " [unquoted]"
     if kwargs.get("compact_ws", False):
         long_string = re.sub("\s+", " ", long_string)
     if len(long_string) <= max_length:
@@ -103,7 +103,7 @@ class QleverNameService:
             self.optional = kwargs.get("optional", False)
             self.predicate_exists_regex = kwargs.get("predicate_exists_regex",
                     "(%s|%s)" % (predicate,
-                        re.sub("^.*[/#](.*)>", "\\S+:\\1", predicate)))
+                        re.sub("^.*[/#](.*)>", "\\\S+:\\\1", predicate)))
             # print("Predicate exists REGEX: ", self.predicate_exists_regex)
 
             # TODO: Hard-coded stuff, make configurable (it's not hard)
@@ -280,7 +280,7 @@ class QleverNameService:
         8
         """
 
-        log.info("QLever Name Service: check which name triples can be added")
+        log.info("\x1b[1mName Service: check which name triples can be added\x1b[0m")
         start_time = time.time()
 
         # Get the various parts of the query (some as lists, some as strings).
@@ -471,10 +471,16 @@ class QleverNameService:
                 prefixes_list, new_select_vars_list, new_triples_list,
                 select_vars_string, body_string, group_by_string, footer_string)
         end_time = time.time()
-        log.info("Total time spent on name service: %dms",
+
+        # Log enhanced query (deactivated because the subsequent GET request is
+        # also logged, so it's redundant here) and total time to compute it.
+        # log.info("Name Service, result query: \x1b[90m%s\x1b[0m"
+        #         % abbrev(enhanced_query, compact_ws=True))
+        log.info("\x1b[1mTotal time spent on name service: %dms\x1b[0m",
                  int(1000 * (end_time - start_time)))
 
         return enhanced_query
+
 
 class Response:
     """
@@ -622,8 +628,10 @@ class Backend:
         # query received by the proxy and may or may not contain parameters, so
         # we cannot simply append with "?..." (which is what fields=... does).
         full_path = self.base_path + query_path + pin_results_params
-        log.info("%s Sending GET request %s",
-                  self.log_prefix, abbrev(full_path, unquote=True))
+        full_path = self.normalize_query(full_path)
+        log.info("%s Sending GET request: \x1b[90m%s\x1b[0m"
+                 " [unquoted for better readability]",
+                  self.log_prefix, abbrev(full_path, compact_ws=True, unquote=True))
 
         try:
             # TODO: Understand why we need keep_alive=False?
@@ -664,6 +672,30 @@ class Backend:
                     % (self.log_prefix, self.host, str(e))
             log.info(error_msg)
             return Response(query_path=query_path, error_msg=error_msg)
+
+
+    def normalize_query(self, query):
+        """ 
+        Normalize query by removing superfluous whitespace and dots, to make it
+        look nicer, but without altering the semantics in any way.
+        """
+
+        # TODO: This currently does not work because query is actually
+        # URL-encoded, and unquoting it and then quoting it again also did not
+        # work, but I did not understand yet why.
+         
+        # unquoted_query = urllib.parse.unquote_plus(query)
+        # Replace als sequences of whitespace by a single space.
+        # TODO: does not work (hence commented out), why?
+        # normalized_query = re.sub("\s+", " ", unquoted_query)
+        # Replace all trailing dots and surrounding whitespace by single space.
+        # normalized_query = re.sub("\s+\.\s+}", " ", normalized_query)
+        # Remove any leading or trailing whitespace.
+        # normalized_query = normalized_query.strip()
+
+        # return urllib.parse.quote(query)
+        return query
+        
 
     def show_cache_stats(self):
         try:
@@ -748,21 +780,30 @@ class QueryProcessor:
         else:
             # If SPARQL query and QLever Name Service active, see if we can add
             # name triples to the query. Note: there can be more & arguments in
-            # the end
-            if path.startswith("/?query=") and self.qlever_name_service:
+            # the end.
+            #
+            # NEW: There is an additional condition now -> there must be an
+            # explicit argument &name_service=true in the URL now. The QLeverUI
+            # sends this after a click on "Execute" or Ctrl+Return, but not in
+            # other situations (e.g. for SPARQL Autocompletion queries).
+            # Previously, this script either used the name service for all
+            # queries or for none, which did not make too much sense.
+            if path.startswith("/?query=") and self.qlever_name_service \
+                    and "&name_service=true" in path:
                 # Note that parse_qsl creates a list of key-value pairs and also
                 # automatically unquotes (and urlencode quotes again).
                 parameters = urllib.parse.parse_qsl(path[2:])
                 sparql_query = parameters[0][1]
+                # Remove the name_service key and value, we only needed it to
+                # determine whether we should activate the name service.
+                parameters.remove(("name_service", "true"))
                 # log.info("SPARQL query before enhancing:\n%s" % sparql_query)
                 new_sparql_query = \
                         self.qlever_name_service.enhance_query(sparql_query)
-                log.info("QLever Name Service, result query: \x1b[90m%s\x1b[0m"
-                        % re.sub("\s+", " ", new_sparql_query))
                 parameters[0] = ("query", new_sparql_query)
                 path = "/?" + urllib.parse.urlencode(parameters)
             else:
-                log.info("Ordinary query, processed using backend 1")
+                log.info("Ordinary query, processed using Backend 1")
             return backend_1.query(path, self.timeout_normal)
 
 
@@ -859,23 +900,42 @@ def MakeRequestHandler(
     
         def do_GET(self):
             """
-            Handle GET request from the caller to the proxy. For SPARQL queries, ask
-            both backends, for other requests (e.g. /?cmd=... or /?clear_cache)
-            only ask backend 1.
-
-            Measure the total time and log it.
+            Handle GET request from the caller to the proxy.
+            
+            NEW: The processing of the query happens in the thread, in order to
+            allow concurreny (otherwise one slow query can block the whole
+            proxy, as was the case in a previous version).
             """
 
-            start_time = time.time()
-    
             # Process request.
             path = str(self.path)
             headers = re.sub("\n", " | ", str(self.headers))
-            path_unquoted = urllib.parse.unquote(path)
+            # path_unquoted = urllib.parse.unquote(path)
             # log.info("")
             print()
-            log.info("GET request received: %s"
-                    % abbrev(path_unquoted, unquote=True, compact_ws=True))
+            self.process_request(path, headers)
+            # This did not work.
+            # thread = threading.Thread(
+            #         target=RequestHandler.process_request,
+            #         args=(self, path, headers))
+            # thread.start()
+
+
+        def process_request(self, path, headers):
+            """
+            Process the request and measure the total time.
+            
+            NOTE: This is called from do_GET and is run in a separate thread for
+            each request, see do_GET above.
+
+            TODO: It seems that "headers" is currently not used in this function
+            and neither was it in the previous (unthreaded) version of the code.
+            """ 
+
+            start_time = time.time()
+            log.info("GET request received: \x1b[90m%s\x1b[0m"
+                     " [unquoted for better readability]"
+                    % abbrev(path, unquote=True, compact_ws=True))
             # log.debug("Headers: %s" % headers)
     
             # Process query. The query process will decided whether to ask both
@@ -911,6 +971,7 @@ def MakeRequestHandler(
             log.info("\x1b[1mTotal time spend on request: %dms\x1b[0m",
                      int(1000 * (end_time - start_time)))
 
+
     # Don't forget to return the class :-)
     return RequestHandler
 
@@ -926,7 +987,12 @@ def server_loop(hostname, port,
     server_address = (hostname, port)
     request_handler_class = MakeRequestHandler(
             backend_1, backend_2, timeout_normal, qlever_name_service)
-    server = http.server.HTTPServer(server_address, request_handler_class)
+    # NEW 23.02.2021: Threaded server. All that was needed was writing
+    # ThreadingHTTPServer instead of HTTPServer, wow. However, this required
+    # upgrading to Python 3.7, which gave a minor problem with a regex
+    # substitute string in this code, namely "\\S+:\\1". Adding an additional
+    # backslash to make it "\\\S+:\\\1" solved the problem.
+    server = http.server.ThreadingHTTPServer(server_address, request_handler_class)
     log.info("Listening to GET requests on \x1b[1m%s:%d\x1b[0m"
                  % (socket.getfqdn(), port))
     server.serve_forever()
@@ -977,7 +1043,7 @@ if __name__ == "__main__":
             "--timeout-2", dest="timeout_2", type=float, default=5.0,
             help="Timeout for Backend 2, when asking parallel queries")
     parser.add_argument(
-            "--timeout", dest="timeout_normal", type=float, default=10.0,
+            "--timeout", dest="timeout_normal", type=float, default=60.0,
             help="Timeout for Backend 1, when asking ordinary queries")
     parser.add_argument(
             "--subject-var-suffix", dest="subject_var_suffix",
@@ -1000,7 +1066,8 @@ if __name__ == "__main__":
     parser.add_argument(
             "--pin-results-backend-2", dest="pin_results_2",
             action="store_true", default=False,
-            help="Pin results from backend 2 to the cache permanently"
+            help="DEPRECATED (since the pinning is now done via the Makefile) "
+            "Pin results from backend 2 to the cache permanently"
             " (QLever URL parameter pinresult=true and pinsubtrees=true)")
     parser.add_argument(
             "--clear-cache-2", dest="clear_cache_2",
@@ -1017,18 +1084,23 @@ if __name__ == "__main__":
     print()
     log.info("Log level is \x1b[1m%s\x1b[0m" % args.log_level)
 
-    # Create backends. The third argument is the id (1 = primary, 2 = fallback)
-    if args.backend_2 == "":
-        args.backend_2 = args.backend_1
+    # Create Backend 1. The third argument is the id (1 = primary, 2 = fallback)
     backend_1 = Backend(args.backend_1, args.timeout_1, 1)
-    backend_2 = Backend(args.backend_2, args.timeout_2, 2,
-        args.pin_results_2, args.clear_cache_2, args.show_cache_stats_2)
-    log.info("Backend 2: Are results and subtrees pinned? " +
-                ("YES" if args.pin_results_2 else "NO"))
-    backend_2.show_cache_stats()
-    if args.clear_cache_2 == False:
-        log.info("Backend 2: To clear pinned queries from cache, start with"
-                 " option --clear-cache-2")
+    backend_1.show_cache_stats()
+
+    # Create Backend 2. If not specified, same as Backend 1.
+    backend_2 = Backend(
+            args.backend_2 if args.backend_2 else args.backend_1,
+            args.timeout_2, 2,
+            args.pin_results_2, args.clear_cache_2, args.show_cache_stats_2)
+    # log.info("Backend 2: Are results and subtrees pinned? " +
+    #            ("YES" if args.pin_results_2 else "NO"))
+    if args.backend_2 != "":
+        backend_2.show_cache_stats()
+        if args.clear_cache_2 == False:
+            log.info("Backend 2: To clear pinned queries from cache, "
+                     "start with option --clear-cache-2")
+
     log.info("Timeout for single-backend queries is %.1fs" %
             args.timeout_normal)
 
@@ -1050,14 +1122,14 @@ if __name__ == "__main__":
     if len(configs_for_add_triple) > 0:
         qlever_name_service = QleverNameService(
                 backend_2, args.subject_var_suffix, configs_for_add_triple)
-        log.info("QLever Name Service is \x1b[1mACTIVE\x1b[0m"
-                 " (only for queries to backend 1, using backend 2)"
+        log.info("Name Service \x1b[1mAVAILABLE\x1b[0m"
+                 " (for queries to Backend 1 with name_service=true)"
                  ", configs are:")
         for config in configs_for_add_triple:
             log.info("\x1b[90m" + str(config) + "\x1b[0m")
     else:
         qlever_name_service = None
-        log.info("QLever Name Service is \x1b[1mNOT active\x1b[0m"
+        log.info("Name Service \x1b[1mNOT available\x1b[0m"
                  " -> see usage info (--help) for how to activate")
 
     # Listen and respond to queries at that port, no matter to which hostname on
