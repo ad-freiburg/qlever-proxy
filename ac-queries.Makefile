@@ -226,9 +226,9 @@ num-triples:
 	curl -Gs $(API) --data-urlencode "query=SELECT ?p (COUNT(?p) AS ?count) WHERE { ?x ql:has-predicate ?p } GROUP BY ?p ORDER BY DESC(?count)" --data-urlencode "action=tsv_export" \
 	  | cut -f1 | grep -v "QLever-internal-function" \
 	  | while read P; do \
-	      printf "$$P\t" && curl -Gs $(API) --data-urlencode "query=SELECT ?x ?y WHERE { ?x $$P ?y }" \
-	        | grep resultsize | sed 's/[^0-9]//g'; \
 	      $(MAKE) -s clear-unpinned > /dev/null; \
+	      printf "$$P\t" && curl -Gs $(API) --data-urlencode "query=SELECT ?x ?y WHERE { ?x $$P ?y }" --data-urlencode "send=10" \
+	        | grep resultsize | sed 's/[^0-9]//g'; \
 	    done \
 	  | tee predicate-counts.tsv | numfmt --field=2 --grouping
 	cut -f2 predicate-counts.tsv | paste -sd+ | bc | numfmt --grouping \
