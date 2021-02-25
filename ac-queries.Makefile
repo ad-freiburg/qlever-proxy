@@ -224,8 +224,13 @@ memory-usage:
 num-triples:
 	@echo "\033[1mCompute total number of triples by computing the number of triples for each predicate\033[0m"
 	curl -Gs $(API) --data-urlencode "query=SELECT ?p (COUNT(?p) AS ?count) WHERE { ?x ql:has-predicate ?p } GROUP BY ?p ORDER BY DESC(?count)" --data-urlencode "action=tsv_export" \
-	  | cut -f1 | while read P; do printf "$$P\t" && curl -Gs $(API) --data-urlencode "query=SELECT ?x ?y WHERE { ?x $$P ?y }" | grep resultsize | sed 's/[^0-9]//g'; done \
-	  | tee predicate-counts.tsv
+	  | cut -f1 | grep -v "QLever-internal-function" \
+	  | while read P; do \
+	      printf "$$P\t" && curl -Gs $(API) --data-urlencode "query=SELECT ?x ?y WHERE { ?x $$P ?y }" \
+	        | grep resultsize | sed 's/[^0-9]//g'; \
+	      $(MAKE) -s clear-unpinned > /dev/null; \
+	    done \
+	  | tee predicate-counts.tsv | numfmt --field=2 --grouping
 	cut -f2 predicate-counts.tsv | paste -sd+ | bc | numfmt --grouping \
 	  | tee yago2.num-triples.txt
 
