@@ -28,8 +28,11 @@
 #    for any knowledge base, but only using the raw IRIs, and no names,
 #    aliases, or whatever special data the knowledge base has to offer.
 
+# The base name of the collection.
+DB = 
+
 # The URL of the API (same as in QLever UI settings)
-API =
+API = https://qlever.cs.uni-freiburg.de/api/$(DB)
 
 # Frequent predicates that should be pinned to the cache (can be left empty).
 # Separate by space. You can use all the prefixes from PREFIXES (e.g. wdt:P31 if
@@ -38,7 +41,7 @@ API =
 FREQUENT_PREDICATES =
 
 # The name of the docker container. Used for target memory-usage: below.
-DOCKER_CONTAINER =
+DOCKER_CONTAINER = qlever.$(DB)
 
 # The prefix definitions that are prepended to each warumup query. Note that
 # define allows multline strings. Which is exactly why we use define here.
@@ -158,6 +161,9 @@ help-show-warmup-query-%:
 # using thousands separators (uses the locale, e.g. en_US.utf8 works fine).
 NUMFMT = grep resultsize | grep -o -E '[0-9]+' | numfmt --grouping
 
+# Options for API calls to pin results, without actually sending them
+PINRESULT = --data-urlencode "pinresult=true" --data-urlencode "send=10"
+
 # Default target: completely clear the cache, then execute the warmup queries
 # and pin the results, then clear the unpinned results. Show cache statistics
 # and memory usage before and afterwards.
@@ -176,32 +182,32 @@ clear_and_pin:
 pin:
 	@echo "\033[1mPin: Entities names aliases score, ordered by score, full result for Subject AC query with empty prefix\033[0m"
 	@$(MAKE) -s show-warmup-query-1
-	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_1" --data-urlencode "pinresult=true" | $(NUMFMT)
+	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_1" $(PINRESULT) | $(NUMFMT)
 	@echo
 	@echo "\033[1mPin: Entities names aliases score, ordered by alias, part of Subject AC query with non-empty prefix\033[0m"
 	@$(MAKE) -s show-warmup-query-2
-	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_2" --data-urlencode "pinresult=true" | $(NUMFMT)
+	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_2" $(PINRESULT) | $(NUMFMT)
 	@echo
 	@echo "\033[1mPin: Entities names aliases score, ordered by entity, part of Object AC query\033[0m"
 	@$(MAKE) -s show-warmup-query-3
-	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_3" --data-urlencode "pinresult=true" | $(NUMFMT)
+	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_3" $(PINRESULT) | $(NUMFMT)
 	@echo
 	@echo "\033[1mPin: Predicates names aliases score, without prefix (only wdt: and schema:about)\033[0m"
 	@$(MAKE) -s show-warmup-query-4
-	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_4" --data-urlencode "pinresult=true" | $(NUMFMT)
+	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_4" $(PINRESULT) | $(NUMFMT)
 	@echo
 	@echo "\033[1mPin: Predicates names aliases score, with prefix (all predicates)\033[0m"
 	@$(MAKE) -s show-warmup-query-5
-	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_5" --data-urlencode "pinresult=true" | $(NUMFMT)
+	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_5" $(PINRESULT) | $(NUMFMT)
 	@echo
 	@$(MAKE) -s clear-unpinned
 	@echo
 	@echo "\033[1mPin: Index lists for some frequent predicates (not strictly needed)\033[0m"
 	for P in $(FREQUENT_PREDICATES); do \
 	  printf "$$P ordered by subject: "; \
-	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?x" --data-urlencode "pinresult=true" | $(NUMFMT); \
+	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?x" $(PINRESULT) | $(NUMFMT); \
 	  printf "$$P ordered by object : "; \
-	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?y" --data-urlencode "pinresult=true" | $(NUMFMT); \
+	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?y" $(PINRESULT) | $(NUMFMT); \
 	  done
 
 clear:
@@ -232,7 +238,7 @@ num-triples:
 	    done \
 	  | tee predicate-counts.tsv | numfmt --field=2 --grouping
 	cut -f2 predicate-counts.tsv | paste -sd+ | bc | numfmt --grouping \
-	  | tee yago2.num-triples.txt
+	  | tee $(DB).num-triples.txt
 
 show-subject-ac-query:
 	@:
