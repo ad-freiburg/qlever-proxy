@@ -288,6 +288,31 @@ endef
 define PREDICATE_AC_QUERY
 %PREFIXES%
 $(PREFIXES)
+# IF !CURRENT_SUBJECT_VARIABLE #
+
+SELECT ?qleverui_entity
+              (MIN(?name) as ?qleverui_name)
+              (MIN(?alias) as ?qleverui_altname)
+              (SAMPLE(?count_2) as ?qleverui_count)
+              (SAMPLE(?qleverui_reversed) as ?qleverui_reversed) WHERE {
+
+  { { SELECT ?qleverui_entity (COUNT(?qleverui_tmp) AS ?count_2)
+    WHERE { %CURRENT_SUBJECT% ?qleverui_entity ?qleverui_tmp  }
+    GROUP BY ?qleverui_entity }
+  BIND (0 AS ?qleverui_reversed) }
+  UNION
+  { { SELECT ?qleverui_entity (COUNT(?qleverui_tmp) AS ?count_2)
+    WHERE { ?qleverui_tmp ?qleverui_entity %CURRENT_SUBJECT%  }
+    GROUP BY ?qleverui_entity }
+    BIND (1 AS ?qleverui_reversed) }
+  { $(WARMUP_QUERY_5) }
+  # IF !CURRENT_WORD_EMPTY #
+  FILTER REGEX(?alias, "%CURRENT_WORD%", "i")
+  # ENDIF #
+} GROUP BY ?qleverui_entity ORDER BY DESC(?qleverui_count)
+
+# ENDIF #
+
 # IF CONNECTED_TRIPLES_EMPTY AND CURRENT_SUBJECT_VARIABLE #
 
 SELECT ?qleverui_entity
@@ -300,7 +325,9 @@ SELECT ?qleverui_entity
   # ENDIF #
 } GROUP BY ?qleverui_entity ORDER BY DESC(?qleverui_count)
 
-# ELSE #
+# ENDIF #
+
+# IF !CONNECTED_TRIPLES_EMPTY AND CURRENT_SUBJECT_VARIABLE #
 
 SELECT ?qleverui_entity
               (MIN(?name) as ?qleverui_name)
