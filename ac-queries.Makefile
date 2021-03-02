@@ -236,8 +236,8 @@ num-triples:
 	      printf "$$P\t" && curl -Gs $(API) --data-urlencode "query=SELECT ?x ?y WHERE { ?x $$P ?y }" --data-urlencode "send=10" \
 	        | grep resultsize | sed 's/[^0-9]//g'; \
 	    done \
-	  | tee predicate-counts.tsv | numfmt --field=2 --grouping
-	cut -f2 predicate-counts.tsv | paste -sd+ | bc | numfmt --grouping \
+	  | tee $(DB).predicate-counts.tsv | numfmt --field=2 --grouping
+	cut -f2 $(DB).predicate-counts.tsv | paste -sd+ | bc | numfmt --grouping \
 	  | tee $(DB).num-triples.txt
 
 show-subject-ac-query:
