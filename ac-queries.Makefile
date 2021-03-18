@@ -218,6 +218,9 @@ clear-unpinned:
 	@echo "\033[1mClear cache, but only the unpinned results\033[0m"
 	curl -Gs $(API) --data-urlencode "cmd=clearcache" > /dev/null
 
+log:
+	docker logs -f --tail 100 $(DOCKER_CONTAINER)
+
 stats:
 	@curl -Gs $(API) --data-urlencode "cmd=cachestats" \
 	  | sed 's/[{}]//g; s/:/: /g; s/,/ , /g' | numfmt --field=2,5,8,11,14 --grouping && echo
