@@ -31,6 +31,12 @@
 # The base name of the collection.
 DB = 
 
+# The port of the QLever backend.
+PORT = 
+
+# Memory for queries in GB.
+MEMORY_FOR_QUERIES = 30
+
 # The URL of the API (same as in QLever UI settings)
 API = https://qlever.cs.uni-freiburg.de/api/$(DB)
 
@@ -39,6 +45,9 @@ API = https://qlever.cs.uni-freiburg.de/api/$(DB)
 # PREFIXES defines the prefix for wdt), but you can also write full IRIs. Just
 # see how it is used in target pin: below, it's very simple.
 FREQUENT_PREDICATES =
+
+# The name of the docker image.
+DOCKER_IMAGE = qlever.pr355-plus
 
 # The name of the docker container. Used for target memory-usage: below.
 DOCKER_CONTAINER = qlever.$(DB)
@@ -150,11 +159,11 @@ export
 # Note: Without the @: (which is a no-op), there will be a message "make: ... is
 # up to date. The $(info ...) shows the query with newlines.
 show-warmup-query-%:
-	@echo $$PREFIXES
 	@$(MAKE) -s help-show-warmup-query-$*
 
 help-show-warmup-query-%:
 	@:
+	$(info $(PREFIXES))
 	$(info $(WARMUP_QUERY_$*))
 
 # Used to extract the result size from a QLever JSON results and pretty print it
@@ -218,9 +227,6 @@ clear-unpinned:
 	@echo "\033[1mClear cache, but only the unpinned results\033[0m"
 	curl -Gs $(API) --data-urlencode "cmd=clearcache" > /dev/null
 
-log:
-	docker logs -f --tail 100 $(DOCKER_CONTAINER)
-
 stats:
 	@curl -Gs $(API) --data-urlencode "cmd=cachestats" \
 	  | sed 's/[{}]//g; s/:/: /g; s/,/ , /g' | numfmt --field=2,5,8,11,14 --grouping && echo
@@ -244,6 +250,18 @@ num-triples:
 	  | tee $(DB).predicate-counts.tsv | numfmt --field=2 --grouping
 	cut -f2 $(DB).predicate-counts.tsv | paste -sd+ | bc | numfmt --grouping \
 	  | tee $(DB).num-triples.txt
+
+
+# COMMANDS TO START DOCKER CONTAINER AND VIEW LOG
+
+start:
+	docker rm -f qlever.$(DB)
+	docker run -d --restart=unless-stopped -v $(pwd):/data -p $(PORT):7001 -e INDEX_PREFIX=$(DB) -e MEMORY_FOR_QUERIES=$(MEMORY_FOR_QUERIES) --name $(DOCKER_CONTAINER) $(DOCKER_IMAGE)
+
+
+log:
+	docker logs -f --tail 100 $(DOCKER_CONTAINER)
+
 
 show-subject-ac-query:
 	@:
