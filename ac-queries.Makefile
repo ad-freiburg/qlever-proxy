@@ -263,7 +263,7 @@ num-triples:
 
 start:
 	docker rm -f qlever.$(DB)
-	docker run -d --restart=unless-stopped -v $(pwd):/data -p $(PORT):7001 -e INDEX_PREFIX=$(DB) -e MEMORY_FOR_QUERIES=$(MEMORY_FOR_QUERIES) --name $(DOCKER_CONTAINER) $(DOCKER_IMAGE)
+	docker run -d --restart=unless-stopped -v $(shell pwd):/index -p $(PORT):7001 -e INDEX_PREFIX=$(DB) -e MEMORY_FOR_QUERIES=$(MEMORY_FOR_QUERIES) --name $(DOCKER_CONTAINER) $(DOCKER_IMAGE)
 
 
 log:
