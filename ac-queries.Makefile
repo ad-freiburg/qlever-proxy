@@ -45,6 +45,7 @@ API = https://qlever.cs.uni-freiburg.de/api/$(DB)
 # PREFIXES defines the prefix for wdt), but you can also write full IRIs. Just
 # see how it is used in target pin: below, it's very simple.
 FREQUENT_PREDICATES =
+FREQUENT_PATTERNS_WITHOUT_ORDER =
 
 # The name of the docker image.
 DOCKER_IMAGE = qlever.pr355-plus
@@ -211,12 +212,18 @@ pin:
 	@echo
 	@$(MAKE) -s clear-unpinned
 	@echo
-	@echo "\033[1mPin: Index lists for some frequent predicates (not strictly needed)\033[0m"
+	@echo "\033[1mPin: Index scans (subject and object order) for some frequent predicates\033[0m"
 	for P in $(FREQUENT_PREDICATES); do \
 	  printf "$$P ordered by subject: "; \
 	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?x" $(PINRESULT) | $(NUMFMT); \
 	  printf "$$P ordered by object : "; \
 	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?y" $(PINRESULT) | $(NUMFMT); \
+	  done
+	@echo
+	@echo "\033[1mPin: Index scans without order\033[0m"
+	for P in $(FREQUENT_PATTERNS_WITHOUT_ORDER); do \
+	  printf "$$P: "; \
+	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y }" $(PINRESULT) | $(NUMFMT); \
 	  done
 
 clear:
