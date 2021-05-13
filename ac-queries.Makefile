@@ -262,9 +262,11 @@ num-triples:
 # COMMANDS TO START DOCKER CONTAINER AND VIEW LOG
 
 start:
-	docker rm -f qlever.$(DB)
+	-docker rm -f qlever.$(DB)
 	docker run -d --restart=unless-stopped -v $(shell pwd):/index -p $(PORT):7001 -e INDEX_PREFIX=$(DB) -e MEMORY_FOR_QUERIES=$(MEMORY_FOR_QUERIES) --name $(DOCKER_CONTAINER) $(DOCKER_IMAGE)
 
+stop:
+	docker stop qlever.$(DB)
 
 log:
 	docker logs -f --tail 100 $(DOCKER_CONTAINER)
