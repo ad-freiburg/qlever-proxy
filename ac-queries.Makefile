@@ -184,15 +184,14 @@ clear_and_pin:
 	@echo
 	@$(MAKE) -s clear
 	@$(MAKE) -s stats memory-usage
-	@echo
 	@$(MAKE) -s pin
-	@echo
 	@$(MAKE) -s clear-unpinned
 	@$(MAKE) -s stats memory-usage
 	@echo
 
 # Pin warmup queries, so that AC queries in the QLever UI are always fast.
 pin:
+	@echo
 	@echo "\033[1mPin: Entities names aliases score, ordered by score, full result for Subject AC query with empty prefix\033[0m"
 	@$(MAKE) -s show-warmup-query-1
 	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_1" $(PINRESULT) | $(NUMFMT)
@@ -230,6 +229,7 @@ pin:
 	  echo "$$PREFIXES\nSELECT ?x ?y WHERE {\n  ?x $$P ?y\n}"; \
 	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y }" $(PINRESULT) | $(NUMFMT); \
 	  done
+	@echo
 
 clear:
 	@echo "\033[1mClear cache completely, including the pinned results\033[0m"
