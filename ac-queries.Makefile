@@ -211,18 +211,20 @@ pin:
 	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_5" $(PINRESULT) | $(NUMFMT)
 	@echo
 	@$(MAKE) -s clear-unpinned
-	@echo
-	@echo "\033[1mPin: Index scans (subject and object order) for some frequent predicates\033[0m"
-	for P in $(FREQUENT_PREDICATES); do \
-	  printf "$$P ordered by subject: "; \
+	@for P in $(FREQUENT_PREDICATES); do \
+	  echo; \
+	  echo "\033[1mPin: $$P ordered by subject\033[0m"; \
+	  echo "$$PREFIXES\nSELECT ?x ?y WHERE {\n  ?x $$P ?y\n} ORDER BY ?x"; \
 	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?x" $(PINRESULT) | $(NUMFMT); \
-	  printf "$$P ordered by object : "; \
+	  echo; \
+	  echo "\033[1mPin: $$P ordered by object\033[0m"; \
+	  echo "$$PREFIXES\nSELECT ?x ?y WHERE {\n  ?x $$P ?y\n} ORDER BY ?x"; \
 	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?y" $(PINRESULT) | $(NUMFMT); \
 	  done
-	@echo
-	@echo "\033[1mPin: Index scans without order\033[0m"
-	for P in $(FREQUENT_PATTERNS_WITHOUT_ORDER); do \
-	  printf "$$P: "; \
+	@for P in $(FREQUENT_PATTERNS_WITHOUT_ORDER); do \
+	  echo; \
+	  echo "\033[1mPin: $$P without ORDER BY\033[0m"; \
+	  echo "$$PREFIXES\nSELECT ?x ?y WHERE {\n  ?x $$P ?y\n}"; \
 	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y }" $(PINRESULT) | $(NUMFMT); \
 	  done
 
