@@ -172,7 +172,7 @@ help-show-warmup-query-%:
 
 # Used to extract the result size from a QLever JSON results and pretty print it
 # using thousands separators (uses the locale, e.g. en_US.utf8 works fine).
-NUMFMT = grep resultsize | grep -o -E '[0-9]+' | numfmt --grouping
+NUMFMT = egrep "\"(resultsize|exception)\"" | tail -1 | sed 's/^\s\+//' | numfmt --delimiter " " --field 2 --suffix , --invalid ignore --grouping | sed 's/,$$//' | xargs -0 printf "\033[34m%s\033[0m"
 
 # Options for API calls to pin results, without actually sending them
 PINRESULT = --data-urlencode "pinresult=true" --data-urlencode "send=10"
