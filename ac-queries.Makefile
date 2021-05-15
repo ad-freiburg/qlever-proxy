@@ -34,8 +34,11 @@ DB =
 # The port of the QLever backend.
 PORT = 
 
-# Memory for queries in GB.
+# Memory for queries and for the cache (all in GB).
 MEMORY_FOR_QUERIES = 30
+CACHE_MAX_SIZE_GB = 30
+CACHE_MAX_SIZE_GB_SINGLE_ENTRY = 5
+CACHE_MAX_NUM_ENTRIES = 1000
 
 # The URL of the API (same as in QLever UI settings)
 API = https://qlever.cs.uni-freiburg.de/api/$(DB)
@@ -265,7 +268,7 @@ num-triples:
 
 start:
 	-docker rm -f qlever.$(DB)
-	docker run -d --restart=unless-stopped -v $(shell pwd):/index -p $(PORT):7001 -e INDEX_PREFIX=$(DB) -e MEMORY_FOR_QUERIES=$(MEMORY_FOR_QUERIES) --name $(DOCKER_CONTAINER) $(DOCKER_IMAGE)
+	docker run -d --restart=unless-stopped -v $(shell pwd):/index -p $(PORT):7001 -e INDEX_PREFIX=$(DB) -e MEMORY_FOR_QUERIES=$(MEMORY_FOR_QUERIES) -e CACHE_MAX_SIZE_GB=${CACHE_MAX_SIZE_GB} -e CACHE_MAX_SIZE_GB_SINGLE_ENTRY=${CACHE_MAX_SIZE_GB_SINGLE_ENTRY} -e CACHE_MAX_NUM_ENTRIES=${CACHE_MAX_NUM_ENTRIES} --name $(DOCKER_CONTAINER) $(DOCKER_IMAGE)
 
 stop:
 	docker stop qlever.$(DB)
