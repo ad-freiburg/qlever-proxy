@@ -192,51 +192,50 @@ clear_and_pin:
 # Pin warmup queries, so that AC queries in the QLever UI are always fast.
 pin:
 	@echo
-	@echo "\033[1mPin: Entities names aliases score, ordered by score, full result for Subject AC query with empty prefix\033[0m"
+	@echo -e "\033[1mPin: Entities names aliases score, ordered by score, full result for Subject AC query with empty prefix\033[0m"
 	@$(MAKE) -s show-warmup-query-1
 	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_1" $(PINRESULT) | $(NUMFMT)
 	@echo
-	@echo "\033[1mPin: Entities names aliases score, ordered by alias, part of Subject AC query with non-empty prefix\033[0m"
+	@echo -e "\033[1mPin: Entities names aliases score, ordered by alias, part of Subject AC query with non-empty prefix\033[0m"
 	@$(MAKE) -s show-warmup-query-2
 	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_2" $(PINRESULT) | $(NUMFMT)
 	@echo
-	@echo "\033[1mPin: Entities names aliases score, ordered by entity, part of Object AC query\033[0m"
+	@echo -e "\033[1mPin: Entities names aliases score, ordered by entity, part of Object AC query\033[0m"
 	@$(MAKE) -s show-warmup-query-3
 	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_3" $(PINRESULT) | $(NUMFMT)
 	@echo
-	@echo "\033[1mPin: Predicates names aliases score, without prefix (only wdt: and schema:about)\033[0m"
+	@echo -e "\033[1mPin: Predicates names aliases score, without prefix (only wdt: and schema:about)\033[0m"
 	@$(MAKE) -s show-warmup-query-4
 	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_4" $(PINRESULT) | $(NUMFMT)
 	@echo
-	@echo "\033[1mPin: Predicates names aliases score, with prefix (all predicates)\033[0m"
+	@echo -e "\033[1mPin: Predicates names aliases score, with prefix (all predicates)\033[0m"
 	@$(MAKE) -s show-warmup-query-5
 	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_5" $(PINRESULT) | $(NUMFMT)
-	@echo
-	@$(MAKE) -s clear-unpinned
+	# @echo && $(MAKE) -s clear-unpinned
 	@for P in $(FREQUENT_PREDICATES); do \
 	  echo; \
-	  echo "\033[1mPin: $$P ordered by subject\033[0m"; \
-	  echo "$$PREFIXES\nSELECT ?x ?y WHERE {\n  ?x $$P ?y\n} ORDER BY ?x"; \
+	  echo -e "\033[1mPin: $$P ordered by subject\033[0m"; \
+	  echo -e "$$PREFIXES\nSELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?x"; \
 	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?x" $(PINRESULT) | $(NUMFMT); \
 	  echo; \
-	  echo "\033[1mPin: $$P ordered by object\033[0m"; \
-	  echo "$$PREFIXES\nSELECT ?x ?y WHERE {\n  ?x $$P ?y\n} ORDER BY ?x"; \
+	  echo -e "\033[1mPin: $$P ordered by object\033[0m"; \
+	  echo -e "$$PREFIXES\nSELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?x"; \
 	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?y" $(PINRESULT) | $(NUMFMT); \
 	  done
 	@for P in $(FREQUENT_PATTERNS_WITHOUT_ORDER); do \
 	  echo; \
-	  echo "\033[1mPin: $$P without ORDER BY\033[0m"; \
-	  echo "$$PREFIXES\nSELECT ?x ?y WHERE {\n  ?x $$P ?y\n}"; \
+	  echo -e "\033[1mPin: $$P without ORDER BY\033[0m"; \
+	  echo -e "$$PREFIXES\nSELECT ?x ?y WHERE { ?x $$P ?y }"; \
 	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y }" $(PINRESULT) | $(NUMFMT); \
 	  done
 	@echo
 
 clear:
-	@echo "\033[1mClear cache completely, including the pinned results\033[0m"
+	@echo -e "\033[1mClear cache completely, including the pinned results\033[0m"
 	curl -Gs $(API) --data-urlencode "cmd=clearcachecomplete" > /dev/null
 
 clear-unpinned:
-	@echo "\033[1mClear cache, but only the unpinned results\033[0m"
+	@echo -e "\033[1mClear cache, but only the unpinned results\033[0m"
 	curl -Gs $(API) --data-urlencode "cmd=clearcache" > /dev/null
 
 stats:
@@ -249,7 +248,7 @@ memory-usage:
 
 
 num-triples:
-	@echo "\033[1mCompute total number of triples by computing the number of triples for each predicate\033[0m"
+	@echo -e "\033[1mCompute total number of triples by computing the number of triples for each predicate\033[0m"
 	curl -Gs $(API) --data-urlencode "query=SELECT ?p (COUNT(?p) AS ?count) WHERE { ?x ql:has-predicate ?p } GROUP BY ?p ORDER BY DESC(?count)" --data-urlencode "action=tsv_export" \
 	  | cut -f1 | grep -v "QLever-internal-function" \
 	  > $(DB).predicates.txt
@@ -291,15 +290,15 @@ show-object-ac-query:
 
 show-all-ac-queries:
 	@echo
-	@echo "\033[1mSubject AC query\033[0m"
+	@echo -e "\033[1mSubject AC query\033[0m"
 	@echo
 	@$(MAKE) -s show-subject-ac-query
 	@echo
-	@echo "\033[1mPredicate AC query\033[0m"
+	@echo -e "\033[1mPredicate AC query\033[0m"
 	@echo
 	@$(MAKE) -s show-predicate-ac-query
 	@echo
-	@echo "\033[1mObject AC query\033[0m"
+	@echo -e "\033[1mObject AC query\033[0m"
 	@echo
 	@$(MAKE) -s show-object-ac-query
 	@echo
