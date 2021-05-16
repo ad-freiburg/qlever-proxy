@@ -1,5 +1,6 @@
+SHELL = /bin/bash
 # PIN WARMUP QUERIES TO CACHE (for the QLever UI)
-# (c) Algorihtms and Data Structures, University of Freiburg
+# (c) Algorithms and Data Structures, University of Freiburg
 # Originally written by Hannah Bast, 20.02.2021
 
 # This Makefile provides the following targets:
