@@ -57,6 +57,19 @@ DOCKER_IMAGE = qlever.pr355-plus
 # The name of the docker container. Used for target memory-usage: below.
 DOCKER_CONTAINER = qlever.$(DB)
 
+# The base name of the DB name (everything before the first dot).
+DB_BASE = $(firstword $(subst ., ,$(DB)))
+
+# The slug of the API (everthing after the last slash).
+API_SLUG = $(lastword $(subst /, ,$(API)))
+
+show-config:
+	@for VAR in DB DB_BASE PORT API API_SLUG \
+	  DOCKER_IMAGE DOCKER_CONTAINER \
+	  MEMORY_FOR_QUERIES \
+	  CACHE_MAX_SIZE_GB CACHE_MAX_SIZE_GB_SINGLE_ENTRY CACHE_MAX_NUM_ENTRIES; do \
+	  printf "%-30s = %s\n" "$$VAR" "$${!VAR}"; done
+
 # The prefix definitions that are prepended to each warumup query. Note that
 # define allows multline strings. Which is exactly why we use define here.
 define PREFIXES
@@ -212,7 +225,6 @@ pin:
 	@echo -e "\033[1mPin: Predicates names aliases score, with prefix (all predicates)\033[0m"
 	@$(MAKE) -s show-warmup-query-5
 	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_5" $(PINRESULT) | $(NUMFMT)
-	# @echo && $(MAKE) -s clear-unpinned
 	@for P in $(FREQUENT_PREDICATES); do \
 	  echo; \
 	  echo -e "\033[1mPin: $$P ordered by subject\033[0m"; \
@@ -243,6 +255,19 @@ stats:
 	@curl -Gs $(API) --data-urlencode "cmd=cachestats" \
 	  | sed 's/[{}]//g; s/:/: /g; s/,/ , /g' | numfmt --field=2,5,8,11,14 --grouping && echo
 
+settings:
+	@curl -Gs $(API) --data-urlencode "cmd=get-settings" \
+	  | sed 's/[{}]//g; s/:/: /g; s/,/ , /g' && echo
+
+BB_FACTOR_SORTED = 100
+BB_FACTOR_UNSORTED = 150
+set:
+	@echo -e "\033[1mSet factor for BB FILTER cost estimate to $(BB_FACTOR)\033[0m"
+	@curl -Gs $(API) --data-urlencode "bounding_box_filter_sorted_cost_estimate=$(BB_FACTOR_SORTED)" \
+	                 --data-urlencode "bounding_box_filter_unsorted_cost_estimate=$(BB_FACTOR_UNSORTED)" \
+	  > \dev\null
+	@$(MAKE) -s settings
+
 memory-usage:
 	@docker stats --no-stream --format \
 	  "Memory usage of docker container $(DOCKER_CONTAINER): {{.MemUsage}}" $(DOCKER_CONTAINER)
@@ -263,6 +288,10 @@ num-triples:
 	cut -f2 $(DB).predicate-counts.tsv | paste -sd+ | bc | numfmt --grouping \
 	  | tee $(DB).num-triples.txt
 
+# TARGETS FOR QLEVER UI ACTIONS (via Django)
+warmup:
+	docker exec -it qlever-ui bash -c "python manage.py warmup $(API_SLUG)"
+
 
 # COMMANDS TO START DOCKER CONTAINER AND VIEW LOG
 
@@ -277,19 +306,19 @@ log:
 	docker logs -f --tail 100 $(DOCKER_CONTAINER)
 
 
-show-subject-ac-query:
+DEPRECATED.show-subject-ac-query:
 	@:
 	$(info $(SUBJECT_AC_QUERY))
 
-show-predicate-ac-query:
+DEPRECATED.show-predicate-ac-query:
 	@:
 	$(info $(PREDICATE_AC_QUERY))
 
-show-object-ac-query:
+DEPRECATED.show-object-ac-query:
 	@:
 	$(info $(OBJECT_AC_QUERY))
 
-show-all-ac-queries:
+DEPRECATED.show-all-ac-queries:
 	@echo
 	@echo -e "\033[1mSubject AC query\033[0m"
 	@echo
