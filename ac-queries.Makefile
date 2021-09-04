@@ -98,12 +98,10 @@ pin:
 
 clear:
 	@curl -Gs $(WARMUP_API)/clear?token=$(TOKEN) | $(HTML2ANSI)
-	@$(MAKE) -s  cachestats && echo
 	@# curl -Gs $(QLEVER_API) --data-urlencode "cmd=clearcachecomplete" > /dev/null
 
 clear_unpinned:
 	@curl -Gsf $(WARMUP_API)/clear_unpinned?token=$(TOKEN) | $(HTML2ANSI)
-	@$(MAKE) -s  cachestats && echo
 	@# curl -Gs $(QLEVER_API) --data-urlencode "cmd=clearcache" > /dev/null
 
 
@@ -113,7 +111,7 @@ cachestats:
 	  | sed 's/[{}]//g; s/:/: /g; s/,/ , /g' | numfmt --field=2,5,8,11,14 --grouping && echo
 
 memory_usage:
-	@docker stats --no-stream --format \
+	@echo && docker stats --no-stream --format \
 	  "Memory usage of docker container $(DOCKER_CONTAINER): {{.MemUsage}}" $(DOCKER_CONTAINER)
 
 
@@ -281,7 +279,6 @@ PINRESULT = --data-urlencode "pinresult=true" --data-urlencode "send=10"
 # and pin the results, then clear the unpinned results. Show cache statistics
 # and memory usage before and afterwards.
 clear_and_pin.DEPRECATED:
-	@echo
 	@$(MAKE) -s clear
 	@$(MAKE) -s cachestats memory_usage
 	@$(MAKE) -s pin.DEPRECATED
