@@ -69,7 +69,7 @@ DOCKER_CONTAINER = qlever.$(DB)
 DB_BASE = $(firstword $(subst ., ,$(DB)))
 
 show-config:
-	@for VAR in DB DB_BASE PORT API SLUG \
+	@for VAR in DB DB_BASE PORT QLEVER_API WARMUP_API \
 	  DOCKER_IMAGE DOCKER_CONTAINER \
 	  MEMORY_FOR_QUERIES \
 	  CACHE_MAX_SIZE_GB CACHE_MAX_SIZE_GB_SINGLE_ENTRY CACHE_MAX_NUM_ENTRIES; do \
@@ -99,12 +99,12 @@ pin:
 clear:
 	@curl -Gs $(WARMUP_API)/clear?token=$(TOKEN) | $(HTML2ANSI)
 	@$(MAKE) -s  cachestats && echo
-	@# curl -Gs $(API) --data-urlencode "cmd=clearcachecomplete" > /dev/null
+	@# curl -Gs $(QLEVER_API) --data-urlencode "cmd=clearcachecomplete" > /dev/null
 
 clear_unpinned:
 	@curl -Gsf $(WARMUP_API)/clear_unpinned?token=$(TOKEN) | $(HTML2ANSI)
 	@$(MAKE) -s  cachestats && echo
-	@# curl -Gs $(API) --data-urlencode "cmd=clearcache" > /dev/null
+	@# curl -Gs $(QLEVER_API) --data-urlencode "cmd=clearcache" > /dev/null
 
 
 # STATISTICS on cache, memory, and the number of triples per predicate.
@@ -119,13 +119,13 @@ memory_usage:
 
 num_triples:
 	@echo -e "\033[1mCompute total number of triples by computing the number of triples for each predicate\033[0m"
-	curl -Gs $(API) --data-urlencode "query=SELECT ?p (COUNT(?p) AS ?count) WHERE { ?x ql:has-predicate ?p } GROUP BY ?p ORDER BY DESC(?count)" --data-urlencode "action=tsv_export" \
+	curl -Gs $(QLEVER_API) --data-urlencode "query=SELECT ?p (COUNT(?p) AS ?count) WHERE { ?x ql:has-predicate ?p } GROUP BY ?p ORDER BY DESC(?count)" --data-urlencode "action=tsv_export" \
 	  | cut -f1 | grep -v "QLever-internal-function" \
 	  > $(DB).predicates.txt
 	cat $(DB).predicates.txt \
 	  | while read P; do \
 	      $(MAKE) -s clear-unpinned > /dev/null; \
-	      printf "$$P\t" && curl -Gs $(API) --data-urlencode "query=SELECT ?x ?y WHERE { ?x $$P ?y }" --data-urlencode "send=10" \
+	      printf "$$P\t" && curl -Gs $(QLEVER_API) --data-urlencode "query=SELECT ?x ?y WHERE { ?x $$P ?y }" --data-urlencode "send=10" \
 	        | grep resultsize | sed 's/[^0-9]//g'; \
 	    done \
 	  | tee $(DB).predicate-counts.tsv | numfmt --field=2 --grouping
@@ -142,7 +142,7 @@ BB_FACTOR_SORTED = 100
 BB_FACTOR_UNSORTED = 150
 set_bb:
 	@echo -e "\033[1mSet factor for BB FILTER cost estimate to $(BB_FACTOR)\033[0m"
-	@curl -Gs $(API) --data-urlencode "bounding_box_filter_sorted_cost_estimate=$(BB_FACTOR_SORTED)" \
+	@curl -Gs $(QLEVER_API) --data-urlencode "bounding_box_filter_sorted_cost_estimate=$(BB_FACTOR_SORTED)" \
 	                 --data-urlencode "bounding_box_filter_unsorted_cost_estimate=$(BB_FACTOR_UNSORTED)" \
 	  > \dev\null
 	@$(MAKE) -s settings
@@ -294,38 +294,38 @@ pin.DEPRECATED:
 	@echo
 	@echo -e "\033[1mPin: Entities names aliases score, ordered by score, full result for Subject AC query with empty prefix\033[0m"
 	@$(MAKE) -s show-warmup-query-1
-	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_1" $(PINRESULT) | $(NUMFMT)
+	curl -Gs $(QLEVER_API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_1" $(PINRESULT) | $(NUMFMT)
 	@echo
 	@echo -e "\033[1mPin: Entities names aliases score, ordered by alias, part of Subject AC query with non-empty prefix\033[0m"
 	@$(MAKE) -s show-warmup-query-2
-	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_2" $(PINRESULT) | $(NUMFMT)
+	curl -Gs $(QLEVER_API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_2" $(PINRESULT) | $(NUMFMT)
 	@echo
 	@echo -e "\033[1mPin: Entities names aliases score, ordered by entity, part of Object AC query\033[0m"
 	@$(MAKE) -s show-warmup-query-3
-	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_3" $(PINRESULT) | $(NUMFMT)
+	curl -Gs $(QLEVER_API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_3" $(PINRESULT) | $(NUMFMT)
 	@echo
 	@echo -e "\033[1mPin: Predicates names aliases score, without prefix (only wdt: and schema:about)\033[0m"
 	@$(MAKE) -s show-warmup-query-4
-	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_4" $(PINRESULT) | $(NUMFMT)
+	curl -Gs $(QLEVER_API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_4" $(PINRESULT) | $(NUMFMT)
 	@echo
 	@echo -e "\033[1mPin: Predicates names aliases score, with prefix (all predicates)\033[0m"
 	@$(MAKE) -s show-warmup-query-5
-	curl -Gs $(API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_5" $(PINRESULT) | $(NUMFMT)
+	curl -Gs $(QLEVER_API) --data-urlencode "query=$$PREFIXES $$WARMUP_QUERY_5" $(PINRESULT) | $(NUMFMT)
 	@for P in $(FREQUENT_PREDICATES); do \
 	  echo; \
 	  echo -e "\033[1mPin: $$P ordered by subject\033[0m"; \
 	  echo -e "$$PREFIXES\nSELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?x"; \
-	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?x" $(PINRESULT) | $(NUMFMT); \
+	  curl -Gs $(QLEVER_API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?x" $(PINRESULT) | $(NUMFMT); \
 	  echo; \
 	  echo -e "\033[1mPin: $$P ordered by object\033[0m"; \
 	  echo -e "$$PREFIXES\nSELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?x"; \
-	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?y" $(PINRESULT) | $(NUMFMT); \
+	  curl -Gs $(QLEVER_API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y } ORDER BY ?y" $(PINRESULT) | $(NUMFMT); \
 	  done
 	@for P in $(FREQUENT_PATTERNS_WITHOUT_ORDER); do \
 	  echo; \
 	  echo -e "\033[1mPin: $$P without ORDER BY\033[0m"; \
 	  echo -e "$$PREFIXES\nSELECT ?x ?y WHERE { ?x $$P ?y }"; \
-	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y }" $(PINRESULT) | $(NUMFMT); \
+	  curl -Gs $(QLEVER_API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y }" $(PINRESULT) | $(NUMFMT); \
 	  done
 	@echo
 
