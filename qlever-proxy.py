@@ -717,12 +717,19 @@ class Backend:
                 timeout=self.timeout_seconds)
             assert(cache_stats_response.status == 200)
             # Show cache stats in a nicely readable way.
+            # NEW 19.06.2021: Qlever uses new keys for cachestats (else).
             cache_stats = eval(cache_stats_response.data.decode("utf-8"))
-            num_results = cache_stats["num-cached-elements"]
-            size_results_mb = cache_stats["cached-size"] / 1e9
-            num_pinned = cache_stats["num-pinned-elements"]
-            size_pinned_mb = cache_stats["pinned-size"] / 1e9
-            log.info("%s %d normally cached results in %.1f GB"
+            if "num-cached-elements" in cache_stats:
+                num_results = cache_stats["num-cached-elements"]
+                size_results_mb = cache_stats["cached-size"] / 1e9
+                num_pinned = cache_stats["num-pinned-elements"]
+                size_pinned_mb = cache_stats["pinned-size"] / 1e9
+            else:
+                num_results = cache_stats["num-non-pinned-entries"]
+                size_results_mb = cache_stats["non-pinned-size"] / 1e9
+                num_pinned = cache_stats["num-pinned-entries"]
+                size_pinned_mb = cache_stats["pinned-size"] / 1e9
+            log.info("%s %d unpinned cached results in %.1f GB"
                      " + %d pinned results in %.1f GB"
                      % (self.log_prefix, num_results, size_results_mb,
                          num_pinned, size_pinned_mb))
