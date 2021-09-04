@@ -90,32 +90,34 @@ log:
 
 
 # WARMUP queries (via new QLever UI API) and 
+HTML2ANSI = jq -r '.log|join("\n")' | sed 's|<strong>\(.*\)</strong>|\n\\033[1m\1\\033[0m|; s|<span style="color: blue">\(.*\)</span>|\\033[34m\1\\033[0m|' | xargs -0 echo -e
+
 pin:
-	@echo -e "\033[1mPin results for warmup query\033[0m"
-	@curl -G $(WARMUP_API)/pin?token=$(TOKEN)
+	@if ! curl -Gsf $(WARMUP_API)/pin?token=$(TOKEN) | $(HTML2ANSI); \
+	  then curl -Gi $(WARMUP_API)/pin?token=$(TOKEN); fi
 
 clear:
-	@echo -e "\033[1mClear cache completely (including the pinned results)\033[0m"
-	@curl -G$(WARMUP_API)/clear?token=$(TOKEN)
-	# curl -Gs $(API) --data-urlencode "cmd=clearcachecomplete" > /dev/null
+	@curl -Gs $(WARMUP_API)/clear?token=$(TOKEN) | $(HTML2ANSI)
+	@$(MAKE) -s  cachestats && echo
+	@# curl -Gs $(API) --data-urlencode "cmd=clearcachecomplete" > /dev/null
 
 clear_unpinned:
-	@echo -e "\033[1mClear cache, but only the unpinned results\033[0m"
-	@curl -G$(WARMUP_API)/clear_unpinned?token=$(TOKEN)
-	# curl -Gs $(API) --data-urlencode "cmd=clearcache" > /dev/null
+	@curl -Gsf $(WARMUP_API)/clear_unpinned?token=$(TOKEN) | $(HTML2ANSI)
+	@$(MAKE) -s  cachestats && echo
+	@# curl -Gs $(API) --data-urlencode "cmd=clearcache" > /dev/null
 
 
 # STATISTICS on cache, memory, and the number of triples per predicate.
-cache-statistics:
+cachestats:
 	@curl -Gs $(QLEVER_API) --data-urlencode "cmd=cachestats" \
 	  | sed 's/[{}]//g; s/:/: /g; s/,/ , /g' | numfmt --field=2,5,8,11,14 --grouping && echo
 
-memory-usage:
+memory_usage:
 	@docker stats --no-stream --format \
 	  "Memory usage of docker container $(DOCKER_CONTAINER): {{.MemUsage}}" $(DOCKER_CONTAINER)
 
 
-num-triples:
+num_triples:
 	@echo -e "\033[1mCompute total number of triples by computing the number of triples for each predicate\033[0m"
 	curl -Gs $(API) --data-urlencode "query=SELECT ?p (COUNT(?p) AS ?count) WHERE { ?x ql:has-predicate ?p } GROUP BY ?p ORDER BY DESC(?count)" --data-urlencode "action=tsv_export" \
 	  | cut -f1 | grep -v "QLever-internal-function" \
@@ -278,17 +280,17 @@ PINRESULT = --data-urlencode "pinresult=true" --data-urlencode "send=10"
 # Default target: completely clear the cache, then execute the warmup queries
 # and pin the results, then clear the unpinned results. Show cache statistics
 # and memory usage before and afterwards.
-clear_and_pin:
+clear_and_pin.DEPRECATED:
 	@echo
 	@$(MAKE) -s clear
-	@$(MAKE) -s stats memory-usage
-	@$(MAKE) -s pin
-	@$(MAKE) -s clear-unpinned
-	@$(MAKE) -s stats memory-usage
+	@$(MAKE) -s cachestats memory_usage
+	@$(MAKE) -s pin.DEPRECATED
+	@$(MAKE) -s clear_unpinned
+	@$(MAKE) -s cachestats memory_usage
 	@echo
 
 # Pin warmup queries, so that AC queries in the QLever UI are always fast.
-pin:
+pin.DEPRECATED:
 	@echo
 	@echo -e "\033[1mPin: Entities names aliases score, ordered by score, full result for Subject AC query with empty prefix\033[0m"
 	@$(MAKE) -s show-warmup-query-1
