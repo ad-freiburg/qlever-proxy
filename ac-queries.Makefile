@@ -41,8 +41,16 @@ CACHE_MAX_SIZE_GB = 30
 CACHE_MAX_SIZE_GB_SINGLE_ENTRY = 5
 CACHE_MAX_NUM_ENTRIES = 1000
 
-# The URL of the API (same as in QLever UI settings)
-API = https://qlever.cs.uni-freiburg.de/api/$(DB)
+# The URL of the QLever backend.
+QLEVER_API = https://qlever.cs.uni-freiburg.de/api/$(DB)
+
+# The URL of the QLever UI istance ... TODO: it's confusing that this also has
+# /api/ in the name, it actually has nothing to do with the URLs from the QLever
+# backends (which are defined in the Apache configuration of QLever).
+WARMUP_API = https://qlever.cs.uni-freiburg.de/api/warmup/$(DB)
+
+# Admin token
+TOKEN = aof4Ad
 
 # Frequent predicates that should be pinned to the cache (can be left empty).
 # Separate by space. You can use all the prefixes from PREFIXES (e.g. wdt:P31 if
@@ -52,7 +60,7 @@ FREQUENT_PREDICATES =
 FREQUENT_PATTERNS_WITHOUT_ORDER =
 
 # The name of the docker image.
-DOCKER_IMAGE = qlever.pr355-plus
+DOCKER_IMAGE = qlever.master
 
 # The name of the docker container. Used for target memory-usage: below.
 DOCKER_CONTAINER = qlever.$(DB)
@@ -60,15 +68,91 @@ DOCKER_CONTAINER = qlever.$(DB)
 # The base name of the DB name (everything before the first dot).
 DB_BASE = $(firstword $(subst ., ,$(DB)))
 
-# The slug of the API (everthing after the last slash).
-API_SLUG = $(lastword $(subst /, ,$(API)))
-
 show-config:
-	@for VAR in DB DB_BASE PORT API API_SLUG \
+	@for VAR in DB DB_BASE PORT API SLUG \
 	  DOCKER_IMAGE DOCKER_CONTAINER \
 	  MEMORY_FOR_QUERIES \
 	  CACHE_MAX_SIZE_GB CACHE_MAX_SIZE_GB_SINGLE_ENTRY CACHE_MAX_NUM_ENTRIES; do \
 	  printf "%-30s = %s\n" "$$VAR" "$${!VAR}"; done
+
+
+# START, STOP, and view LOG
+
+start:
+	-docker rm -f qlever.$(DB)
+	docker run -d --restart=unless-stopped -v $(shell pwd):/index -p $(PORT):7001 -e INDEX_PREFIX=$(DB) -e MEMORY_FOR_QUERIES=$(MEMORY_FOR_QUERIES) -e CACHE_MAX_SIZE_GB=${CACHE_MAX_SIZE_GB} -e CACHE_MAX_SIZE_GB_SINGLE_ENTRY=${CACHE_MAX_SIZE_GB_SINGLE_ENTRY} -e CACHE_MAX_NUM_ENTRIES=${CACHE_MAX_NUM_ENTRIES} --name $(DOCKER_CONTAINER) $(DOCKER_IMAGE)
+
+stop:
+	docker stop qlever.$(DB)
+
+log:
+	docker logs -f --tail 100 $(DOCKER_CONTAINER)
+
+
+# WARMUP queries (via new QLever UI API) and 
+pin:
+	@echo -e "\033[1mPin results for warmup query\033[0m"
+	@curl -G $(WARMUP_API)/pin?token=$(TOKEN)
+
+clear:
+	@echo -e "\033[1mClear cache completely (including the pinned results)\033[0m"
+	@curl -G$(WARMUP_API)/clear?token=$(TOKEN)
+	# curl -Gs $(API) --data-urlencode "cmd=clearcachecomplete" > /dev/null
+
+clear_unpinned:
+	@echo -e "\033[1mClear cache, but only the unpinned results\033[0m"
+	@curl -G$(WARMUP_API)/clear_unpinned?token=$(TOKEN)
+	# curl -Gs $(API) --data-urlencode "cmd=clearcache" > /dev/null
+
+
+# STATISTICS on cache, memory, and the number of triples per predicate.
+cache-statistics:
+	@curl -Gs $(QLEVER_API) --data-urlencode "cmd=cachestats" \
+	  | sed 's/[{}]//g; s/:/: /g; s/,/ , /g' | numfmt --field=2,5,8,11,14 --grouping && echo
+
+memory-usage:
+	@docker stats --no-stream --format \
+	  "Memory usage of docker container $(DOCKER_CONTAINER): {{.MemUsage}}" $(DOCKER_CONTAINER)
+
+
+num-triples:
+	@echo -e "\033[1mCompute total number of triples by computing the number of triples for each predicate\033[0m"
+	curl -Gs $(API) --data-urlencode "query=SELECT ?p (COUNT(?p) AS ?count) WHERE { ?x ql:has-predicate ?p } GROUP BY ?p ORDER BY DESC(?count)" --data-urlencode "action=tsv_export" \
+	  | cut -f1 | grep -v "QLever-internal-function" \
+	  > $(DB).predicates.txt
+	cat $(DB).predicates.txt \
+	  | while read P; do \
+	      $(MAKE) -s clear-unpinned > /dev/null; \
+	      printf "$$P\t" && curl -Gs $(API) --data-urlencode "query=SELECT ?x ?y WHERE { ?x $$P ?y }" --data-urlencode "send=10" \
+	        | grep resultsize | sed 's/[^0-9]//g'; \
+	    done \
+	  | tee $(DB).predicate-counts.tsv | numfmt --field=2 --grouping
+	cut -f2 $(DB).predicate-counts.tsv | paste -sd+ | bc | numfmt --grouping \
+	  | tee $(DB).num-triples.txt
+
+
+# SETTINGS
+settings:
+	@curl -Gs $(QLEVER_API) --data-urlencode "cmd=get-settings" \
+	  | sed 's/[{}]//g; s/:/: /g; s/,/ , /g' && echo
+
+BB_FACTOR_SORTED = 100
+BB_FACTOR_UNSORTED = 150
+set_bb:
+	@echo -e "\033[1mSet factor for BB FILTER cost estimate to $(BB_FACTOR)\033[0m"
+	@curl -Gs $(API) --data-urlencode "bounding_box_filter_sorted_cost_estimate=$(BB_FACTOR_SORTED)" \
+	                 --data-urlencode "bounding_box_filter_unsorted_cost_estimate=$(BB_FACTOR_UNSORTED)" \
+	  > \dev\null
+	@$(MAKE) -s settings
+
+
+
+
+#
+# The rest is DEPRECATED stuff related to warumup queries. These are now
+# configured in the QLever UI and can be either triggered from there or via an
+# API call (see target warmup above).
+#
 
 # The prefix definitions that are prepended to each warumup query. Note that
 # define allows multline strings. Which is exactly why we use define here.
@@ -242,68 +326,6 @@ pin:
 	  curl -Gs $(API) --data-urlencode "query=$$PREFIXES SELECT ?x ?y WHERE { ?x $$P ?y }" $(PINRESULT) | $(NUMFMT); \
 	  done
 	@echo
-
-clear:
-	@echo -e "\033[1mClear cache completely, including the pinned results\033[0m"
-	curl -Gs $(API) --data-urlencode "cmd=clearcachecomplete" > /dev/null
-
-clear-unpinned:
-	@echo -e "\033[1mClear cache, but only the unpinned results\033[0m"
-	curl -Gs $(API) --data-urlencode "cmd=clearcache" > /dev/null
-
-stats:
-	@curl -Gs $(API) --data-urlencode "cmd=cachestats" \
-	  | sed 's/[{}]//g; s/:/: /g; s/,/ , /g' | numfmt --field=2,5,8,11,14 --grouping && echo
-
-settings:
-	@curl -Gs $(API) --data-urlencode "cmd=get-settings" \
-	  | sed 's/[{}]//g; s/:/: /g; s/,/ , /g' && echo
-
-BB_FACTOR_SORTED = 100
-BB_FACTOR_UNSORTED = 150
-set:
-	@echo -e "\033[1mSet factor for BB FILTER cost estimate to $(BB_FACTOR)\033[0m"
-	@curl -Gs $(API) --data-urlencode "bounding_box_filter_sorted_cost_estimate=$(BB_FACTOR_SORTED)" \
-	                 --data-urlencode "bounding_box_filter_unsorted_cost_estimate=$(BB_FACTOR_UNSORTED)" \
-	  > \dev\null
-	@$(MAKE) -s settings
-
-memory-usage:
-	@docker stats --no-stream --format \
-	  "Memory usage of docker container $(DOCKER_CONTAINER): {{.MemUsage}}" $(DOCKER_CONTAINER)
-
-
-num-triples:
-	@echo -e "\033[1mCompute total number of triples by computing the number of triples for each predicate\033[0m"
-	curl -Gs $(API) --data-urlencode "query=SELECT ?p (COUNT(?p) AS ?count) WHERE { ?x ql:has-predicate ?p } GROUP BY ?p ORDER BY DESC(?count)" --data-urlencode "action=tsv_export" \
-	  | cut -f1 | grep -v "QLever-internal-function" \
-	  > $(DB).predicates.txt
-	cat $(DB).predicates.txt \
-	  | while read P; do \
-	      $(MAKE) -s clear-unpinned > /dev/null; \
-	      printf "$$P\t" && curl -Gs $(API) --data-urlencode "query=SELECT ?x ?y WHERE { ?x $$P ?y }" --data-urlencode "send=10" \
-	        | grep resultsize | sed 's/[^0-9]//g'; \
-	    done \
-	  | tee $(DB).predicate-counts.tsv | numfmt --field=2 --grouping
-	cut -f2 $(DB).predicate-counts.tsv | paste -sd+ | bc | numfmt --grouping \
-	  | tee $(DB).num-triples.txt
-
-# TARGETS FOR QLEVER UI ACTIONS (via Django)
-warmup:
-	docker exec -it qlever-ui bash -c "python manage.py warmup $(API_SLUG)"
-
-
-# COMMANDS TO START DOCKER CONTAINER AND VIEW LOG
-
-start:
-	-docker rm -f qlever.$(DB)
-	docker run -d --restart=unless-stopped -v $(shell pwd):/index -p $(PORT):7001 -e INDEX_PREFIX=$(DB) -e MEMORY_FOR_QUERIES=$(MEMORY_FOR_QUERIES) -e CACHE_MAX_SIZE_GB=${CACHE_MAX_SIZE_GB} -e CACHE_MAX_SIZE_GB_SINGLE_ENTRY=${CACHE_MAX_SIZE_GB_SINGLE_ENTRY} -e CACHE_MAX_NUM_ENTRIES=${CACHE_MAX_NUM_ENTRIES} --name $(DOCKER_CONTAINER) $(DOCKER_IMAGE)
-
-stop:
-	docker stop qlever.$(DB)
-
-log:
-	docker logs -f --tail 100 $(DOCKER_CONTAINER)
 
 
 DEPRECATED.show-subject-ac-query:
