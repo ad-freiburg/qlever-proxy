@@ -79,11 +79,11 @@ show-config:
 # START, STOP, and view LOG
 
 start:
-	-docker rm -f qlever.$(DB)
+	-docker rm -f $(DOCKER_CONTAINER)
 	docker run -d --restart=unless-stopped -v $(shell pwd):/index -p $(PORT):7001 -e INDEX_PREFIX=$(DB) -e MEMORY_FOR_QUERIES=$(MEMORY_FOR_QUERIES) -e CACHE_MAX_SIZE_GB=${CACHE_MAX_SIZE_GB} -e CACHE_MAX_SIZE_GB_SINGLE_ENTRY=${CACHE_MAX_SIZE_GB_SINGLE_ENTRY} -e CACHE_MAX_NUM_ENTRIES=${CACHE_MAX_NUM_ENTRIES} --name $(DOCKER_CONTAINER) $(DOCKER_IMAGE)
 
 stop:
-	docker stop qlever.$(DB)
+	docker stop $(DOCKER_CONTAINER)
 
 log:
 	docker logs -f --tail 100 $(DOCKER_CONTAINER)
