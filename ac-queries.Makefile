@@ -35,6 +35,9 @@ DB =
 # The port of the QLever backend.
 PORT = 
 
+# The slug used in the URL, default = the part of $(DB) before the first dot.
+SLUG = $(firstword $(subst ., ,$(DB)))
+
 # Memory for queries and for the cache (all in GB).
 MEMORY_FOR_QUERIES = 30
 CACHE_MAX_SIZE_GB = 30
@@ -42,12 +45,12 @@ CACHE_MAX_SIZE_GB_SINGLE_ENTRY = 5
 CACHE_MAX_NUM_ENTRIES = 1000
 
 # The URL of the QLever backend.
-QLEVER_API = https://qlever.cs.uni-freiburg.de/api/$(DB)
+QLEVER_API = https://qlever.cs.uni-freiburg.de/api/$(SLUG)
 
 # The URL of the QLever UI istance ... TODO: it's confusing that this also has
 # /api/ in the name, it actually has nothing to do with the URLs from the QLever
 # backends (which are defined in the Apache configuration of QLever).
-WARMUP_API = https://qlever.cs.uni-freiburg.de/api/warmup/$(DB)
+WARMUP_API = $(subst /api/,/api/warmup/,$(QLEVER_API))
 
 # Admin token
 TOKEN = aof4Ad
@@ -65,11 +68,8 @@ DOCKER_IMAGE = qlever.master
 # The name of the docker container. Used for target memory-usage: below.
 DOCKER_CONTAINER = qlever.$(DB)
 
-# The base name of the DB name (everything before the first dot).
-DB_BASE = $(firstword $(subst ., ,$(DB)))
-
 show-config:
-	@for VAR in DB DB_BASE PORT QLEVER_API WARMUP_API \
+	@for VAR in DB SLUG PORT QLEVER_API WARMUP_API \
 	  DOCKER_IMAGE DOCKER_CONTAINER \
 	  MEMORY_FOR_QUERIES \
 	  CACHE_MAX_SIZE_GB CACHE_MAX_SIZE_GB_SINGLE_ENTRY CACHE_MAX_NUM_ENTRIES; do \
@@ -89,8 +89,22 @@ log:
 	docker logs -f --tail 100 $(DOCKER_CONTAINER)
 
 
-# WARMUP queries (via new QLever UI API) and 
-HTML2ANSI = jq -r '.log|join("\n")' | sed 's|<strong>\(.*\)</strong>|\n\\033[1m\1\\033[0m|; s|<span style="color: blue">\(.*\)</span>|\\033[34m\1\\033[0m|' | xargs -0 echo -e
+# WARMUP queries. The .local target only works on the machine, where the
+# qlever-ui Docker container is running. It has the advantage of being more
+# interactive than the WARMUP_API call (which for pin: returns only after all
+# warmup queries have been executed and times out if this takes too long, for
+# reasons I have not fully understood yet, apparently there is a time out in one
+# of the proxies involved).
+HTML2ANSI = jq -r '.log|join("\n")' | sed 's|<strong>\(.*\)</strong>|\\033[1m\1\\033[0m|; s|<span style="color: blue">\(.*\)</span>|\\033[34m\1\\033[0m|' | xargs -0 echo -e
+
+pin.local:
+	docker exec -it qlever-ui bash -c "python manage.py warmup $(SLUG) pin"
+
+clear.local:
+	docker exec -it qlever-ui bash -c "python manage.py warmup $(SLUG) clear"
+
+clear_unpinned.local:
+	docker exec -it qlever-ui bash -c "python manage.py warmup $(SLUG) clear_unpinned"
 
 pin:
 	@if ! curl -Gsf $(WARMUP_API)/pin?token=$(TOKEN) | $(HTML2ANSI); \
