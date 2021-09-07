@@ -29,14 +29,22 @@ SHELL = /bin/bash
 #    for any knowledge base, but only using the raw IRIs, and no names,
 #    aliases, or whatever special data the knowledge base has to offer.
 
-# The base name of the collection.
+# A prefix that identifies a particular build. This typically consists of a base
+# name and optionally further specificataion separated by dots. For example:
+# wikidata. Or: wikidata.2021-06-27
 DB = 
+
+# The base name of the prefix = the part before the first dot. Often, the name
+# of the input (ttl) file or of the settings (json) file use only the basename
+# and not the full prefix.
+DB_BASE = $(firstword $(subst ., ,$(DB)))
 
 # The port of the QLever backend.
 PORT = 
 
-# The slug used in the URL, default = the part of $(DB) before the first dot.
-SLUG = $(firstword $(subst ., ,$(DB)))
+# The slug used in the URL of the QLever API and the QleverUI API. This is
+# typically the basename of the prefix. For example: wikidata. Or: freebase.
+SLUG = $(DB_BASE)
 
 # Memory for queries and for the cache (all in GB).
 MEMORY_FOR_QUERIES = 30
@@ -69,12 +77,28 @@ DOCKER_IMAGE = qlever.master
 DOCKER_CONTAINER = qlever.$(DB)
 
 show-config:
-	@for VAR in DB SLUG PORT QLEVER_API WARMUP_API \
+	@echo
+	@echo "Basic configuration variables:"
+	@echo
+	@for VAR in DB DB_BASE SLUG CAT TTL \
+	  PORT QLEVER_API WARMUP_API \
 	  DOCKER_IMAGE DOCKER_CONTAINER \
 	  MEMORY_FOR_QUERIES \
 	  CACHE_MAX_SIZE_GB CACHE_MAX_SIZE_GB_SINGLE_ENTRY CACHE_MAX_NUM_ENTRIES; do \
 	  printf "%-30s = %s\n" "$$VAR" "$${!VAR}"; done
+	@echo
+	@echo "make index.THIS_WILL_OVERWRITE_AN_EXISTING_INDEX will execute the following:"
+	@echo
+	@$(MAKE) -sn index.THIS_WILL_OVERWRITE_AN_EXISTING_INDEX
+	@echo
 
+# Build an index
+
+CAT = cat
+TTL = $(DB_BASE).ttl
+
+index.THIS_WILL_OVERWRITE_AN_EXISTING_INDEX:
+	time ( docker run -it --rm -v $(shell pwd):/index --entrypoint bash --name qlever.$(DB)-index $(DOCKER_IMAGE) -c "$(CAT) /index/$(TTL) | IndexBuilderMain -F ttl -f - -l -i /index/$(DB) -s /index/$(DB_BASE).settings.json | tee /index/$(DB).index-log.txt"; rm -f $(DB)*tmp* )
 
 # START, STOP, and view LOG
 
