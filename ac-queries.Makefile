@@ -121,6 +121,9 @@ log:
 # of the proxies involved).
 HTML2ANSI = jq -r '.log|join("\n")' | sed 's|<strong>\(.*\)</strong>|\\033[1m\1\\033[0m|; s|<span style="color: blue">\(.*\)</span>|\\033[34m\1\\033[0m|' | xargs -0 echo -e
 
+pin.remote:
+	ssh -t galera docker exec -it qlever-ui bash -c "python manage.py warmup $(SLUG) pin"
+
 pin.local:
 	docker exec -it qlever-ui bash -c "python manage.py warmup $(SLUG) pin"
 
