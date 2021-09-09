@@ -103,11 +103,19 @@ TTL = $(DB_BASE).ttl
 index.THIS_WILL_OVERWRITE_AN_EXISTING_INDEX:
 	time ( docker run -it --rm -v $(shell pwd):/index --entrypoint bash --name qlever.$(DB)-index $(DOCKER_IMAGE) -c "$(CAT) /index/$(TTL) | IndexBuilderMain -F ttl -f - -l -i /index/$(DB) -s /index/$(DB_BASE).settings.json | tee /index/$(DB).index-log.txt"; rm -f $(DB)*tmp* )
 
-# START, STOP, and view LOG
+# START, WAIT (until the backend is read to respond), STOP, and view LOG
 
 start:
 	-docker rm -f $(DOCKER_CONTAINER)
 	docker run -d --restart=unless-stopped -v $(shell pwd):/index -p $(PORT):7001 -e INDEX_PREFIX=$(DB) -e MEMORY_FOR_QUERIES=$(MEMORY_FOR_QUERIES) -e CACHE_MAX_SIZE_GB=${CACHE_MAX_SIZE_GB} -e CACHE_MAX_SIZE_GB_SINGLE_ENTRY=${CACHE_MAX_SIZE_GB_SINGLE_ENTRY} -e CACHE_MAX_NUM_ENTRIES=${CACHE_MAX_NUM_ENTRIES} --name $(DOCKER_CONTAINER) $(DOCKER_IMAGE)
+	
+wait:
+	@echo
+	@echo "[wait] Waiting for QLever backend (one dot = 10 seconds)"
+	@echo
+	@while [ $$(curl --silent http://localhost:$(PORT) > /dev/null; echo $$?) != 0 ]; \
+	  do printf "."; sleep 10; done; echo
+	@echo
 
 stop:
 	docker stop $(DOCKER_CONTAINER)
