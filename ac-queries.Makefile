@@ -87,6 +87,9 @@ show-config:
 	  CACHE_MAX_SIZE_GB CACHE_MAX_SIZE_GB_SINGLE_ENTRY CACHE_MAX_NUM_ENTRIES; do \
 	  printf "%-30s = %s\n" "$$VAR" "$${!VAR}"; done
 	@echo
+	@printf "All targets: "
+	@grep "^[A-Za-z._]\+:" /local/data/qlever/qlever-proxy/ac-queries.Makefile | sed 's/://' | paste -sd" "
+	@echo
 	@echo "make index.THIS_WILL_OVERWRITE_AN_EXISTING_INDEX will execute the following:"
 	@echo
 	@$(MAKE) -sn index.THIS_WILL_OVERWRITE_AN_EXISTING_INDEX
