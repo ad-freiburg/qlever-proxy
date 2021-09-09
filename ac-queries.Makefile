@@ -101,7 +101,7 @@ CAT = cat
 TTL = $(DB_BASE).ttl
 
 index.THIS_WILL_OVERWRITE_AN_EXISTING_INDEX:
-	time ( docker run -it --rm -v $(shell pwd):/index --entrypoint bash --name qlever.$(DB)-index $(DOCKER_IMAGE) -c "$(CAT) /index/$(TTL) | IndexBuilderMain -F ttl -f - -l -i /index/$(DB) -s /index/$(DB_BASE).settings.json | tee /index/$(DB).index-log.txt"; rm -f $(DB)*tmp* )
+	time ( docker run -it --rm -v $(shell pwd):/index --entrypoint bash --name qlever.$(DB)-index $(DOCKER_IMAGE) -c "cd /index && $(CAT) $(TTL) | IndexBuilderMain -F ttl -f - -l -i $(DB) -s $(DB_BASE).settings.json | tee $(DB).index-log.txt"; rm -f $(DB)*tmp* )
 
 # START, STOP, and view LOG
 
