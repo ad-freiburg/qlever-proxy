@@ -147,6 +147,10 @@ clear_unpinned:
 
 
 # STATISTICS on cache, memory, and the number of triples per predicate.
+
+disk_usage:
+	du -hc $(DB).index.* $(DB).literals-index $(DB).vocabulary $(DB).prefixes
+
 cachestats:
 	@curl -Gs $(QLEVER_API) --data-urlencode "cmd=cachestats" \
 	  | sed 's/[{}]//g; s/:/: /g; s/,/ , /g' | numfmt --field=2,5,8,11,14 --grouping && echo
