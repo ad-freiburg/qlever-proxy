@@ -114,6 +114,9 @@ wait:
 	 while [ $$(curl --silent http://localhost:$(PORT) > /dev/null; echo $$?) != 0 ]; \
 	   do sleep 1; done; kill $$PID
 
+start_and_pin:
+	$(MAKE) -s start wait pin.remote
+
 stop:
 	docker stop $(DOCKER_CONTAINER)
 
