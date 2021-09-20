@@ -97,7 +97,7 @@ show-config:
 
 # Build an index
 
-CAT_TTL = cat $(DB_BASE).ttl
+CAT_TTL = cat $(DB).ttl
 
 index.THIS_WILL_OVERWRITE_AN_EXISTING_INDEX:
 	time ( docker run -it --rm -v $(shell pwd):/index --entrypoint bash --name qlever.$(DB)-index $(DOCKER_IMAGE) -c "cd /index && $(CAT_TTL) | IndexBuilderMain -F ttl -f - -l -i $(DB) -K $(DB) -s $(DB_BASE).settings.json | tee $(DB).index-log.txt"; rm -f $(DB)*tmp* )
