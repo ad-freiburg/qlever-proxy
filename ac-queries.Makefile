@@ -80,7 +80,7 @@ show-config:
 	@echo
 	@echo "Basic configuration variables:"
 	@echo
-	@for VAR in DB DB_BASE SLUG CAT TTL \
+	@for VAR in DB DB_BASE SLUG CAT_TTL \
 	  PORT QLEVER_API WARMUP_API \
 	  DOCKER_IMAGE DOCKER_CONTAINER \
 	  MEMORY_FOR_QUERIES \
@@ -200,3 +200,6 @@ set_bb:
 	  --data-urlencode "bounding_box_filter_unsorted_cost_estimate=$(BB_FACTOR_UNSORTED)" \
 	  > \dev\null
 	@$(MAKE) -s settings
+	
+export
+
