@@ -514,6 +514,7 @@ class Response:
 
         self.http_response = kwargs.get("http_response", None)
         self.error_data = None
+        self.error_status_code = 404
 
         # If http_response == None, create an error message.
         if self.http_response == None:
@@ -530,7 +531,7 @@ class Response:
                     "exception": error_msg }).encode("utf-8")
 
         # If http_response.data == "status": "ERROR" then set http_response to
-        # Note that  None and set error_data instead.
+        # None and set error_data instead.
         #
         # NOTE: Alternatively, we could have create an http_response object with
         # "status": "ERROR" in the case of an error, but I could not figure out
@@ -543,6 +544,7 @@ class Response:
                     log.info("\x1b[31mQLever response with ERROR: "
                             + re.sub("\s+", " ", error_msg) + "\x1b[0m")
                     self.error_data = self.http_response.data
+                    self.error_status_code = self.http_response.status
                     self.http_response = None
             except Exception as e:
                 log.info("\x1b[31mCould not parse QLever result ("
@@ -592,7 +594,7 @@ class Backend:
 
         # Optionally clear the cache initially.
         if self.clear_cache:
-            clear_cache_fields = { "cmd": "clearcachecomplete" }
+            clear_cache_fields = { "cmd": "clear-cache-complete" }
             clear_cache_response = self.connection_pool.request(
                 'GET', self.base_path, fields=clear_cache_fields)
             assert(clear_cache_response.status == 200)
@@ -649,7 +651,9 @@ class Backend:
             headers = urllib3.make_headers(keep_alive=False)
             response = self.connection_pool.request('GET', full_path,
                     fields=None, headers=headers, timeout=timeout)
-            assert(response.status == 200)
+            # NEW 27.01.2022: No need to restrict to certain status codes, since
+            # the status code is passed through now.
+            # assert(response.status == 200 or response.status == 400)
             log.debug("%s Response data: %s", self.log_prefix,
                 abbrev(str(response.data), max_length=500, compact_ws=True))
             # log.debug("Content type  : %s", response.getheader("Content-Type"))
@@ -711,7 +715,7 @@ class Backend:
     def show_cache_stats(self):
         try:
             # Get the response and throw exception if status != 200.
-            cache_stats_fields = { "cmd": "cachestats" }
+            cache_stats_fields = { "cmd": "cache-stats" }
             cache_stats_response = self.connection_pool.request(
                 'GET', self.base_path, fields=cache_stats_fields,
                 timeout=self.timeout_seconds)
@@ -794,7 +798,7 @@ class QueryProcessor:
                 log.info("YAML = \n" + queries_yaml)
                 return Response(query_path=path, error_msg=error_msg)
         # CASE 2: An ordinary query, which we send to backend 1. This can be a
-        # SPARQL query or a command like /?cmd=stats or /?cmd=clearcache
+        # SPARQL query or a command like /?cmd=stats or /?cmd=clear-cache
         else:
             # If SPARQL query and QLever Name Service active, see if we can add
             # name triples to the query. Note: there can be more & arguments in
@@ -978,7 +982,7 @@ def MakeRequestHandler(
                           " (headers preserved: %s)" % ", ".join(headers_preserved))
             # Otherwise, send an error message
             else:
-                self.send_response(200)
+                self.send_response(response.error_status_code)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
@@ -1091,7 +1095,7 @@ if __name__ == "__main__":
             "--clear-cache-2", dest="clear_cache_2",
             action="store_true", default=False,
             help="Clear cache from backend 2 initially, including pinned"
-            " results (QLever URL parameter cmd=clearcachecomplete)")
+            " results (QLever URL parameter cmd=clear-cache-complete)")
     parser.add_argument(
             "--show-cache-stats-2", dest="show_cache_stats_2",
             action="store_true", default=True,
