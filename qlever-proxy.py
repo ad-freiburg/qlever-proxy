@@ -34,13 +34,15 @@ log.addHandler(handler)
 # by a single space. When called with compact_ws=True, only do the latter.
 # space.
 def abbrev(long_string, **kwargs):
-    max_length = kwargs.get("max_length", 500)
+    max_length = kwargs.get("max_length", 120)
     # long_string = "\"" + long_string + "\""
     if kwargs.get("unquote", False):
-        long_string = re.sub("\n", " ",
-                urllib.parse.unquote_plus(long_string)) # + " [unquoted]"
+        long_string = urllib.parse.unquote_plus(long_string)
+        # long_string = re.sub("\n", " ",
+        #         urllib.parse.unquote_plus(long_string)) # + " [unquoted]"
     if kwargs.get("compact_ws", False):
         long_string = re.sub("\s+", " ", long_string)
+        long_string = re.sub(" &", "&", long_string)
     if len(long_string) <= max_length:
         return long_string
     else:
@@ -642,9 +644,9 @@ class Backend:
         # we cannot simply append with "?..." (which is what fields=... does).
         full_path = self.base_path + query_path + pin_results_params
         full_path = self.normalize_query(full_path)
-        log.info("%s Sending GET request: \x1b[90m%s\x1b[0m"
-                 " [unquoted for better readability]",
-                  self.log_prefix, abbrev(full_path, compact_ws=True, unquote=True))
+        log.info("%s Sending GET request [unquoted and whitespace compressed]:"
+                 "\n\x1b[90m%s\x1b[0m" % (self.log_prefix,
+                     abbrev(full_path, compact_ws=True, unquote=True)))
 
         try:
             # TODO: Understand why we need keep_alive=False?
@@ -810,22 +812,32 @@ class QueryProcessor:
             # other situations (e.g. for SPARQL Autocompletion queries).
             # Previously, this script either used the name service for all
             # queries or for none, which did not make too much sense.
-            if path.startswith("/?query=") and self.qlever_name_service \
-                    and "&name_service=true" in path:
+            if path.startswith("/?query="):
                 # Note that parse_qsl creates a list of key-value pairs and also
                 # automatically unquotes (and urlencode quotes again).
                 parameters = urllib.parse.parse_qsl(path[2:])
                 sparql_query = parameters[0][1]
-                # Remove the name_service key and value, we only needed it to
-                # determine whether we should activate the name service.
-                parameters.remove(("name_service", "true"))
-                # log.info("SPARQL query before enhancing:\n%s" % sparql_query)
-                new_sparql_query = \
-                        self.qlever_name_service.enhance_query(sparql_query)
-                parameters[0] = ("query", new_sparql_query)
-                path = "/?" + urllib.parse.urlencode(parameters)
+                # NEW 14.04.2022: Show the SPARQL query in the log (no matter
+                # whether we want the name service or not, it's just good to be
+                # able to have the full SPARQL query in the log in a manner that
+                # we can just copy & paste).
+                log.info("Found URL parameter \"query\" with this value: "
+                         "\n\x1b[90m%s\x1b[0m" % re.sub("\s+$", "", sparql_query))
+                # Now comes the name-service specfic code. 
+                if self.qlever_name_service \
+                    and "&name_service=true" in path:
+                  # Remove the name_service key and value, we only needed it to
+                  # determine whether we should activate the name service.
+                  parameters.remove(("name_service", "true"))
+                  # log.info("SPARQL query before enhancing:\n%s" % sparql_query)
+                  new_sparql_query = \
+                          self.qlever_name_service.enhance_query(sparql_query)
+                  parameters[0] = ("query", new_sparql_query)
+                  path = "/?" + urllib.parse.urlencode(parameters)
+                else:
+                  log.info("SPARQL query without name service, processed using Backend 1")
             else:
-                log.info("Ordinary query, processed using Backend 1")
+                log.info("Non-SPARQL query, processed using Backend 1")
             return backend_1.query(path, self.timeout_normal)
 
 
@@ -955,9 +967,12 @@ def MakeRequestHandler(
             """ 
 
             start_time = time.time()
-            log.info("GET request received: \x1b[90m%s\x1b[0m"
-                     " [unquoted for better readability]"
+            log.info("GET request received [unquoted and whitespace compressed]:\n\x1b[90m%s\x1b[0m"
                     % abbrev(path, unquote=True, compact_ws=True))
+            # log.info("GET request received [unquoted and newline inserted]:"
+            #          " \x1b[90m%s\x1b[0m"
+            #         % re.sub("^(/\?query=)", "\\1\n",
+            #             abbrev(path, unquote=True, compact_ws=False)))
             # log.debug("Headers: %s" % headers)
     
             # Process query. The query process will decided whether to ask both
