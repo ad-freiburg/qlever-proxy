@@ -516,7 +516,7 @@ class Response:
 
         self.http_response = kwargs.get("http_response", None)
         self.error_data = None
-        self.error_status_code = 404
+        self.error_status_code = kwargs.get("status_code", 404)
 
         # If http_response == None, create an error message.
         if self.http_response == None:
@@ -636,13 +636,17 @@ class Backend:
         pin_results_params = "&pinresult=true&pinsubtrees=true" \
             if kwargs.get("pin_results_override", self.pin_results) else ""
 
+        # Add timeout parameter.
+        # timeout_param = "&timeout=1"
+        timeout_param = "&timeout=%d" % timeout
+
         # Build Query URL.
         #
         # Note: We cannot easily use "fields=..." for the URL parameters in
         # connection_pool.request below because "query_path" may come from the
         # query received by the proxy and may or may not contain parameters, so
         # we cannot simply append with "?..." (which is what fields=... does).
-        full_path = self.base_path + query_path + pin_results_params
+        full_path = self.base_path + query_path + pin_results_params + timeout_param
         full_path = self.normalize_query(full_path)
         log.info("%s Sending GET request [unquoted and whitespace compressed]:"
                  "\n\x1b[90m%s\x1b[0m" % (self.log_prefix,
@@ -673,17 +677,23 @@ class Backend:
             error_msg = "%s Timeout (socket.timeout) after %.1f seconds" \
                     % (self.log_prefix, timeout)
             log.info(error_msg)
-            return Response(query_path=query_path, error_msg=error_msg)
+            return Response(query_path=query_path,
+                            error_msg=error_msg,
+                            status_code=500)
         except urllib3.exceptions.ReadTimeoutError as e:
             error_msg = "%s Timeout (ReadTimeoutError) after %.1f seconds" \
                     % (self.log_prefix, timeout)
             log.info(error_msg)
-            return Response(query_path=query_path, error_msg=error_msg)
+            return Response(query_path=query_path,
+                            error_msg=error_msg,
+                            status_code=500)
         except urllib3.exceptions.MaxRetryError as e:
             error_msg = "%s Timeout (MaxRetryError) after %.1f seconds" \
                     % (self.log_prefix, timeout)
             log.info(error_msg)
-            return Response(query_path=query_path, error_msg=error_msg)
+            return Response(query_path=query_path,
+                            error_msg=error_msg,
+                            status_code=500)
         except Exception as e:
             error_msg = "%s Error with request to %s (%s)" \
                     % (self.log_prefix, self.host, str(e))
