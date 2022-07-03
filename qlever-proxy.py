@@ -249,7 +249,7 @@ class QleverNameService:
                f"}} {footer_string}"
 
 
-    def enhance_query(self, sparql_query):
+    def enhance_query(self, sparql_query, headers):
         """
         Enhance the query, so that in the result for each columns with an ID
         that also has a name (via name_predicate) there is also a column (right
@@ -269,7 +269,7 @@ class QleverNameService:
         ...     "  ?x wdt:P31 wd:Q5 ."
         ...     "  ?x wdt:P17 ?y ."
         ...     "  ?y rdfs:label ?y_label ."
-        ...     "} LIMIT 10 ").split("\\n")
+        ...     "} LIMIT 10 ", {}).split("\\n")
         >>> sparql_lines[:3] # doctest: +NORMALIZE_WHITESPACE
         ['PREFIX wdt: <http://www.wikidata.org/prop/direct/>',
          'PREFIX wd: <http://www.wikidata.org/entity/>',
@@ -387,6 +387,7 @@ class QleverNameService:
                 try:
                     response = self.backend.query("/?query=" +
                         urllib.parse.quote(test_query),
+                        headers,
                         self.backend.timeout_seconds,
                         pin_results_override=False)
                 except Exception as e:
@@ -606,7 +607,7 @@ class Backend:
              self.host, self.port, self.base_path, timeout_seconds,
              " [cache completely cleared]" if self.clear_cache else "")
 
-    def query_and_write_to_queue(self, query_path, timeout, queue):
+    def query_and_write_to_queue(self, query_path, headers, timeout, queue):
         """ 
         Like method query below, but append response to given queue (along with
         the backend id, so that we know which result comes from with backend).
@@ -615,10 +616,10 @@ class Backend:
         that appends from different threads are serialized and don't interfere
         with each other.
         """
-        response = self.query(query_path, timeout)
+        response = self.query(query_path, headers, timeout)
         queue.put((response, self.backend_id))
 
-    def query(self, query_path, timeout, **kwargs):
+    def query(self, query_path, headers, timeout, **kwargs):
         """ 
         Sent a GET request to the QLever backend, with the given path (which
         should always start with a / even if it's a relative path).
@@ -654,7 +655,7 @@ class Backend:
 
         try:
             # TODO: Understand why we need keep_alive=False?
-            headers = urllib3.make_headers(keep_alive=False)
+            # headers = urllib3.make_headers(keep_alive=False)
             response = self.connection_pool.request('GET', full_path,
                     fields=None, headers=headers, timeout=timeout)
             # NEW 27.01.2022: No need to restrict to certain status codes, since
@@ -777,7 +778,7 @@ class QueryProcessor:
         self.timeout_normal = timeout_normal
         self.qlever_name_service = qlever_name_service
 
-    def query(self, path):
+    def query(self, path, headers):
         """
         Decide what to do depending on the form of the query:
 
@@ -803,7 +804,7 @@ class QueryProcessor:
                 log.info("Query 2: " + abbrev(query_2, compact_ws=True))
                 path_1 = "/?query=" + urllib.parse.quote(query_1)
                 path_2 = "/?query=" + urllib.parse.quote(query_2)
-                return self.query_backends_in_parallel(path_1, path_2)
+                return self.query_backends_in_parallel(path_1, path_2, headers)
             except Exception as e:
                 error_msg = "\x1b[31mError parsing the YAML string (%s)\x1b[0m" % str(e)
                 log.info(error_msg)
@@ -841,17 +842,17 @@ class QueryProcessor:
                   parameters.remove(("name_service", "true"))
                   # log.info("SPARQL query before enhancing:\n%s" % sparql_query)
                   new_sparql_query = \
-                          self.qlever_name_service.enhance_query(sparql_query)
+                          self.qlever_name_service.enhance_query(sparql_query, headers)
                   parameters[0] = ("query", new_sparql_query)
                   path = "/?" + urllib.parse.urlencode(parameters)
                 else:
                   log.info("SPARQL query without name service, processed using Backend 1")
             else:
                 log.info("Non-SPARQL query, processed using Backend 1")
-            return backend_1.query(path, self.timeout_normal)
+            return backend_1.query(path, headers, self.timeout_normal)
 
 
-    def query_backends_in_parallel(self, path_1, path_2):
+    def query_backends_in_parallel(self, path_1, path_2, headers):
         """
         Query both backends in parallel with a preference for a result from the
         first backend, as explained above.
@@ -862,10 +863,10 @@ class QueryProcessor:
         result_queue = queue.Queue()
         thread_1 = threading.Thread(
                 target=self.backend_1.query_and_write_to_queue,
-                args=(path_1, self.backend_1.timeout_seconds, result_queue))
+                args=(path_1, headers, self.backend_1.timeout_seconds, result_queue))
         thread_2 = threading.Thread(
                 target=self.backend_2.query_and_write_to_queue,
-                args=(path_2, self.backend_2.timeout_seconds, result_queue))
+                args=(path_2, headers, self.backend_2.timeout_seconds, result_queue))
         for thread in [thread_1, thread_2]:
             thread.daemon = True
             thread.start()
@@ -953,11 +954,11 @@ def MakeRequestHandler(
 
             # Process request.
             path = str(self.path)
-            headers = re.sub("\n", " | ", str(self.headers))
+            # headers = re.sub("\n", " | ", str(self.headers))
             # path_unquoted = urllib.parse.unquote(path)
             # log.info("")
             print()
-            self.process_request(path, headers)
+            self.process_request(path, self.headers)
             # This did not work.
             # thread = threading.Thread(
             #         target=RequestHandler.process_request,
@@ -983,12 +984,22 @@ def MakeRequestHandler(
             #          " \x1b[90m%s\x1b[0m"
             #         % re.sub("^(/\?query=)", "\\1\n",
             #             abbrev(path, unquote=True, compact_ws=False)))
-            # log.debug("Headers: %s" % headers)
+
+            # Not sure which kind of object "headers" is, but str(headers) turns
+            # it into a newline-separated list, so we simply extract the
+            # "Accept" header from that list and turn it into a dictionary. Not
+            # pretty, but it works.
+            match = re.search("Accept: (\S+)", str(headers))
+            if match != None:
+                headers = { "Accept": match.group(1) }
+            else:
+                headers = {}
+            log.info("Headers: %s" % headers)
     
             # Process query. The query process will decided whether to ask both
             # backends in parallel, whether to call the QLever Name Service,
             # etc. If something goes wrong, the response is None.
-            response = self.query_processor.query(path)
+            response = self.query_processor.query(path, headers)
 
             # For both case below, the QLever UI will only accept the response
             # when there is a Access-Control-Allow-Origin header.
